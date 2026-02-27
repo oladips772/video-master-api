@@ -318,7 +318,12 @@ class RenderService:
         
         try:
             audio_data = await generate_speech(text, voice_id)
-            
+
+            if not audio_data or len(audio_data) < 100:
+                raise RuntimeError(
+                    f"Kokoro TTS returned empty or invalid audio data ({len(audio_data) if audio_data else 0} bytes)"
+                )
+
             temp_audio_path = os.path.join(job.temp_dir, f"scene_{scene.get('scene_number')}_audio.mp3")
             with open(temp_audio_path, "wb") as f:
                 f.write(audio_data)
@@ -371,7 +376,7 @@ class RenderService:
         try:
             # Prepare parameters for image_to_video
             params = {
-                "image_url": f"file://{temp_image_path}",
+                "image_url": temp_image_path,  # pass local path directly; download_image handles os.path.exists()
                 "video_length": duration,
                 "frame_rate": settings.get("fps", 30),
                 "zoom_speed": 10.0,

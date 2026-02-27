@@ -46,9 +46,9 @@ async def generate_speech(
         # Call the Kokoro API
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                KOKORO_API_URL, 
-                json=data,  # This sends the data as JSON in the request body
-                timeout=KOKORO_TIMEOUT
+                KOKORO_API_URL,
+                json=data,
+                timeout=aiohttp.ClientTimeout(total=KOKORO_TIMEOUT)
             ) as response:
                 if response.status != 200:
                     error_text = await response.text()
