@@ -97,7 +97,7 @@ class RenderService:
     def __init__(self):
         self.jobs: Dict[str, RenderJob] = {}
         # Limit concurrent TTS calls — Kokoro is CPU-bound and can't handle many at once
-        self._tts_semaphore = asyncio.Semaphore(int(os.environ.get("KOKORO_CONCURRENCY", "2")))
+        self._tts_semaphore = asyncio.Semaphore(int(os.environ.get("KOKORO_CONCURRENCY", "1")))
         logger.info(f"Initialized RenderService with batch size {BATCH_SIZE}")
     
     async def start_render(self, job_id: str, render_params: Dict[str, Any]) -> str:
@@ -313,30 +313,45 @@ class RenderService:
             raise RuntimeError(f"Failed to generate image for scene {scene.get('scene_number')}: {e}")
     
     async def _generate_voiceover_for_scene(self, job: RenderJob, scene: Dict[str, Any]) -> str:
-        """Generate voiceover using Kokoro TTS."""
+        """Generate voiceover using Kokoro TTS with retry logic."""
         text = scene.get("narration_text")
         voice_id = scene.get("voice_id", "af_heart")
-        
-        logger.info(f"Generating voiceover for scene {scene.get('scene_number')} with voice {voice_id}")
-        
-        try:
-            async with self._tts_semaphore:
-                audio_data = await generate_speech(text, voice_id)
+        scene_num = scene.get("scene_number")
+        max_attempts = int(os.environ.get("KOKORO_MAX_RETRIES", "3"))
 
-            if not audio_data or len(audio_data) < 100:
-                raise RuntimeError(
-                    f"Kokoro TTS returned empty or invalid audio data ({len(audio_data) if audio_data else 0} bytes)"
-                )
+        logger.info(f"Generating voiceover for scene {scene_num} with voice {voice_id}")
 
-            temp_audio_path = os.path.join(job.temp_dir, f"scene_{scene.get('scene_number')}_audio.mp3")
-            with open(temp_audio_path, "wb") as f:
-                f.write(audio_data)
-            
-            logger.info(f"Voiceover saved to {temp_audio_path}")
-            return temp_audio_path
-        
-        except Exception as e:
-            raise RuntimeError(f"Failed to generate voiceover for scene {scene.get('scene_number')}: {e}")
+        last_error = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with self._tts_semaphore:
+                    audio_data = await generate_speech(text, voice_id)
+
+                if not audio_data or len(audio_data) < 100:
+                    raise RuntimeError(
+                        f"Kokoro TTS returned empty or invalid audio data ({len(audio_data) if audio_data else 0} bytes)"
+                    )
+
+                temp_audio_path = os.path.join(job.temp_dir, f"scene_{scene_num}_audio.mp3")
+                with open(temp_audio_path, "wb") as f:
+                    f.write(audio_data)
+
+                logger.info(f"Voiceover saved to {temp_audio_path}")
+                return temp_audio_path
+
+            except Exception as e:
+                last_error = e
+                if attempt < max_attempts:
+                    wait = 2 ** attempt  # 2s, 4s, 8s
+                    logger.warning(
+                        f"TTS attempt {attempt}/{max_attempts} failed for scene {scene_num}: {e}. "
+                        f"Retrying in {wait}s..."
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(f"TTS failed after {max_attempts} attempts for scene {scene_num}: {e}")
+
+        raise RuntimeError(f"Failed to generate voiceover for scene {scene_num}: {last_error}")
     
     def _get_audio_duration(self, audio_path: str) -> float:
         """Get audio duration using ffprobe."""
