@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Dict, List, Optional, Any, Union
-from pydantic import BaseModel, Field, AnyUrl
+from pydantic import BaseModel, Field, AnyUrl, field_validator
 
 
 class JobStatus(str, Enum):
@@ -791,18 +791,26 @@ class KenBurnsKeypoint(BaseModel):
     x: float = Field(
         ge=0.0,
         le=1.0,
-        description="X position (0.0 = left, 1.0 = right)"
+        description="X position (0.0 = left, 1.0 = right). Accepts either 0.0–1.0 or 0–100 (auto-normalized)."
     )
     y: float = Field(
         ge=0.0,
         le=1.0,
-        description="Y position (0.0 = top, 1.0 = bottom)"
+        description="Y position (0.0 = top, 1.0 = bottom). Accepts either 0.0–1.0 or 0–100 (auto-normalized)."
     )
     zoom: float = Field(
         ge=1.0,
         le=3.0,
         description="Zoom level (1.0 = no zoom, 3.0 = 3x zoom)"
     )
+
+    @field_validator("x", "y", mode="before")
+    @classmethod
+    def normalize_percentage(cls, v: float) -> float:
+        """Auto-normalize percentage values (0–100) to normalized floats (0.0–1.0)."""
+        if isinstance(v, (int, float)) and v > 1.0:
+            return v / 100.0
+        return v
 
 
 class RenderScene(BaseModel):
