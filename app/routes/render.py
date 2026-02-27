@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/render", tags=["render"])
 
 
-@router.post("/", response_model=RenderResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("", response_model=RenderResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_render_job(request: RenderRequest):
     """
     Start a new multi-scene video render job.
