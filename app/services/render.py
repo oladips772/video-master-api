@@ -93,9 +93,11 @@ class RenderJob:
 
 class RenderService:
     """Service for multi-scene video rendering."""
-    
+
     def __init__(self):
         self.jobs: Dict[str, RenderJob] = {}
+        # Limit concurrent TTS calls — Kokoro is CPU-bound and can't handle many at once
+        self._tts_semaphore = asyncio.Semaphore(int(os.environ.get("KOKORO_CONCURRENCY", "2")))
         logger.info(f"Initialized RenderService with batch size {BATCH_SIZE}")
     
     async def start_render(self, job_id: str, render_params: Dict[str, Any]) -> str:
@@ -318,7 +320,8 @@ class RenderService:
         logger.info(f"Generating voiceover for scene {scene.get('scene_number')} with voice {voice_id}")
         
         try:
-            audio_data = await generate_speech(text, voice_id)
+            async with self._tts_semaphore:
+                audio_data = await generate_speech(text, voice_id)
 
             if not audio_data or len(audio_data) < 100:
                 raise RuntimeError(
