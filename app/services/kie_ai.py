@@ -128,7 +128,7 @@ async def _poll_task_status(task_id: str, max_polls: int = None) -> dict:
             elif status == "failed" or status == "error":
                 error_msg = data.get("failMsg", "Unknown error")
                 raise KieAiError(f"Task {task_id} failed: {error_msg}")
-            elif status == "processing" or status == "pending":
+            elif status in ("processing", "pending", "waiting", "queued"):
                 # Task still processing, wait and retry
                 await asyncio.sleep(KIE_AI_POLL_INTERVAL)
                 continue
