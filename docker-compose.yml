@@ -5,8 +5,8 @@ services:
     image: quay.io/minio/minio:latest
     container_name: miniio-media-master-api
     ports:
-      - "49000:9000"   # MinIO API
-      - "49001:9001"   # MinIO Console
+      - "49000:9000" # MinIO API
+      - "49001:9001" # MinIO Console
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -20,14 +20,14 @@ services:
     environment:
       - DOWNLOAD_MODEL=true
     ports:
-      - "8880:8880" 
+      - "8880:8880"
     restart: unless-stopped
 
   api:
     build: .
     container_name: media-master-api
     ports:
-      - "48000:8000"
+      - "2000:8000"
     environment:
       - API_KEY=${API_KEY}
       - S3_ENDPOINT_URL=${S3_ENDPOINT_URL}
@@ -48,4 +48,3 @@ volumes:
 networks:
   default:
     driver: bridge
-        
