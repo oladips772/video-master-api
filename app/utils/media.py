@@ -103,10 +103,23 @@ async def download_media_file(media_url: str, temp_dir: str = "temp") -> Tuple[s
             # Extract object key from path
             object_key = path.lstrip('/')
             logger.info(f"Detected S3 URL, downloading object: {object_key}")
-            
+
             # Use S3 service to download the file
             from app.services.s3 import s3_service
-            local_file_path = await s3_service.download_file(object_key, local_file_path)
+            try:
+                local_file_path = await s3_service.download_file(object_key, local_file_path)
+            except Exception as e:
+                logger.error(f"Error using s3_service to download media: {e}")
+                # If URL has a presigned signature, try direct HTTP download as fallback
+                if '?' in media_url:
+                    logger.info("Trying direct HTTP download with presigned S3 URL as fallback")
+                    response = requests.get(media_url, timeout=60)
+                    response.raise_for_status()
+                    with open(local_file_path, 'wb') as f:
+                        f.write(response.content)
+                    logger.info(f"Successfully downloaded media with presigned S3 URL: {local_file_path}")
+                else:
+                    raise
         elif is_youtube_url(media_url):
             # Use yt-dlp for YouTube URLs
             logger.info(f"Detected YouTube URL, using yt-dlp: {media_url}")
@@ -259,12 +272,24 @@ async def download_subtitle_file(subtitle_url: str, temp_dir: str = "temp") -> s
             # Extract object key from path and use S3 service
             object_key = path.lstrip('/')
             logger.info(f"Detected S3 URL, downloading subtitle: {object_key}")
-            
+
             from app.services.s3 import s3_service
-            temp_file_path = await s3_service.download_file(object_key, temp_file_path)
+            try:
+                temp_file_path = await s3_service.download_file(object_key, temp_file_path)
+            except Exception as e:
+                logger.error(f"Error using s3_service to download subtitle: {e}")
+                # If URL has a presigned signature, try direct HTTP download as fallback
+                if '?' in subtitle_url:
+                    logger.info("Trying direct HTTP download with presigned S3 URL as fallback")
+                    response = requests.get(subtitle_url, timeout=30)
+                    response.raise_for_status()
+                    with open(temp_file_path, 'wb') as f:
+                        f.write(response.content)
+                    logger.info(f"Successfully downloaded subtitle with presigned S3 URL: {temp_file_path}")
+                else:
+                    raise
         else:
             # Use regular HTTP download for non-S3 URLs
-            import requests
             response = requests.get(subtitle_url, timeout=30)
             response.raise_for_status()
             
