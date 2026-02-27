@@ -22,11 +22,12 @@ import json
 
 from app.services.kie_ai import kie_ai_service, KieAiError
 from app.services.audio.text_to_speech import generate_speech
-from app.services.image.image_to_video import image_to_video_service
 from app.services.video.concatenate import concatenate_videos
 from app.services.video.add_audio import add_audio_service
 from app.utils.storage import storage_manager
 from app.utils.media import download_media_file
+from app.utils.image_to_video.image_processing import process_image
+from app.utils.image_to_video.video_generation import create_video_with_effects
 import aiohttp
 
 # Configure logging
@@ -374,25 +375,25 @@ class RenderService:
             f.write(image_data)
         
         try:
-            # Prepare parameters for image_to_video
-            params = {
-                "image_url": temp_image_path,  # pass local path directly; download_image handles os.path.exists()
-                "video_length": duration,
-                "frame_rate": settings.get("fps", 30),
-                "zoom_speed": 10.0,
-                "effect_type": "ken_burns",
-                "pan_direction": scene.get("pan_direction", "right"),
-                "ken_burns_keypoints": scene.get("ken_burns_keypoints"),
-                "match_length": "audio"
-            }
-            
-            # Call existing image_to_video service
-            result = await image_to_video_service.image_to_video(params)
-            
-            output_path = result.get("path") or result.get("file_path")
-            logger.info(f"Ken Burns video generated: {output_path}")
-            return output_path
-        
+            # Get image dimensions for video generation
+            image_result = await process_image(temp_image_path)
+
+            # Generate Ken Burns video as a local file (no S3 upload)
+            video_path = await create_video_with_effects(
+                image_path=image_result["image_path"],
+                video_length=duration,
+                frame_rate=settings.get("fps", 30),
+                zoom_speed=10.0,
+                output_dims=image_result["output_dims"],
+                scale_dims=image_result["scale_dims"],
+                effect_type="ken_burns",
+                pan_direction=scene.get("pan_direction", "right"),
+                ken_burns_keypoints=scene.get("ken_burns_keypoints")
+            )
+
+            logger.info(f"Ken Burns video generated: {video_path}")
+            return video_path
+
         except Exception as e:
             logger.error(f"Error generating Ken Burns video: {e}")
             raise RuntimeError(f"Failed to generate Ken Burns video: {e}")
