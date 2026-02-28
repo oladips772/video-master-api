@@ -3,7 +3,7 @@ Service for generating images via Together AI (FLUX.1-schnell).
 """
 import os
 import logging
-import httpx
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -60,36 +60,39 @@ class TogetherAIService:
             f"{dims['width']}x{dims['height']}, prompt={prompt[:80]}..."
         )
 
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
+        timeout = aiohttp.ClientTimeout(total=60)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Step 1: generate image and get temporary URL
+            async with session.post(
                 f"{TOGETHER_BASE_URL}/images/generations",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
                 json=payload,
-            )
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(
+                        f"Together AI API error {response.status}: {error_text[:300]}"
+                    )
+                data = await response.json()
 
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"Together AI API error {response.status_code}: {response.text[:300]}"
-                )
-
-            data = response.json()
             image_url = data["data"][0]["url"]
             logger.info(f"Together AI image URL: {image_url}")
 
-            # URL is temporary — download immediately
-            img_response = await client.get(image_url, follow_redirects=True)
-            if img_response.status_code != 200:
-                raise RuntimeError(
-                    f"Failed to download Together AI image ({img_response.status_code}): "
-                    f"{img_response.text[:200]}"
-                )
+            # Step 2: download immediately — URL is temporary
+            async with session.get(image_url, allow_redirects=True) as img_response:
+                if img_response.status != 200:
+                    error_text = await img_response.text()
+                    raise RuntimeError(
+                        f"Failed to download Together AI image ({img_response.status}): "
+                        f"{error_text[:200]}"
+                    )
+                image_bytes = await img_response.read()
 
-            image_bytes = img_response.content
-            logger.info(f"Together AI image downloaded: {len(image_bytes)} bytes")
-            return image_bytes
+        logger.info(f"Together AI image downloaded: {len(image_bytes)} bytes")
+        return image_bytes
 
 
 # Lazy singleton — instantiated on first use so startup doesn't fail when key is absent
