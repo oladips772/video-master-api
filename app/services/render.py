@@ -290,28 +290,38 @@ class RenderService:
             job.failed_scenes += 1
     
     async def _generate_image_for_scene(self, job: RenderJob, scene: Dict[str, Any]) -> bytes:
-        """Generate image using Kie.ai."""
+        """Generate image using the provider specified in settings (default: Together AI)."""
         settings = job.render_params.get("settings", {})
         aspect_ratio = settings.get("aspect_ratio", "16:9")
-        resolution = settings.get("resolution", "1080")
-        
+        image_provider = settings.get("image_provider", "together")
         prompt = scene.get("image_prompt")
-        
-        logger.info(f"Generating image for scene {scene.get('scene_number')}: {prompt[:100]}...")
-        
+        scene_num = scene.get("scene_number")
+
+        logger.info(
+            f"Generating image for scene {scene_num} via {image_provider}: {prompt[:100]}..."
+        )
+
         try:
-            image_data = await kie_ai_service.generate_image(prompt, aspect_ratio, resolution)
-            
+            if image_provider == "kie":
+                resolution = settings.get("resolution", "1080")
+                image_data = await kie_ai_service.generate_image(prompt, aspect_ratio, resolution)
+            else:
+                # Default: Together AI
+                from app.services.together_ai import get_together_ai_service
+                image_data = await get_together_ai_service().generate_image(prompt, aspect_ratio)
+
             # Save to temp file
-            temp_image_path = os.path.join(job.temp_dir, f"scene_{scene.get('scene_number')}_image.jpg")
+            temp_image_path = os.path.join(job.temp_dir, f"scene_{scene_num}_image.jpg")
             with open(temp_image_path, "wb") as f:
                 f.write(image_data)
-            
+
             logger.info(f"Image saved to {temp_image_path}")
             return image_data
-        
+
         except KieAiError as e:
-            raise RuntimeError(f"Failed to generate image for scene {scene.get('scene_number')}: {e}")
+            raise RuntimeError(f"Failed to generate image for scene {scene_num}: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate image for scene {scene_num}: {e}")
     
     async def _generate_voiceover_for_scene(self, job: RenderJob, scene: Dict[str, Any]) -> str:
         """Generate voiceover using Kokoro TTS with retry logic."""

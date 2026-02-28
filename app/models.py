@@ -790,6 +790,13 @@ class RenderSettings(BaseModel):
         le=2.0,
         description="Global voice speed for all scenes (0.5=half speed, 1.0=normal, 2.0=double speed). Can be overridden per-scene."
     )
+    image_provider: str = Field(
+        default="together",
+        description=(
+            "Image generation provider for all scenes. "
+            "Options: 'together' (Together AI FLUX.1-schnell, default) or 'kie' (Kie.ai Flux-2 Pro)."
+        )
+    )
     captions_enabled: bool = Field(
         default=False,
         description="Enable animated captions burned into every scene. Requires re-encoding."
@@ -811,6 +818,15 @@ class RenderSettings(BaseModel):
         default=None,
         description="Caption styling overrides (font, color, size, etc.). See VideoCaptionProperties for available keys."
     )
+
+
+    @field_validator("image_provider")
+    @classmethod
+    def validate_image_provider(cls, v: str) -> str:
+        allowed = {"together", "kie"}
+        if v not in allowed:
+            raise ValueError(f"image_provider must be one of {allowed}, got '{v}'")
+        return v
 
 
 class KenBurnsKeypoint(BaseModel):
