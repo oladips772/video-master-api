@@ -790,6 +790,27 @@ class RenderSettings(BaseModel):
         le=2.0,
         description="Global voice speed for all scenes (0.5=half speed, 1.0=normal, 2.0=double speed). Can be overridden per-scene."
     )
+    captions_enabled: bool = Field(
+        default=False,
+        description="Enable animated captions burned into every scene. Requires re-encoding."
+    )
+    caption_style: str = Field(
+        default="highlight",
+        description=(
+            "Caption animation style applied to all scenes. Options: "
+            "'highlight' (active word highlighted), "
+            "'word_by_word' (one word at a time), "
+            "'karaoke' (left-to-right sweep per word), "
+            "'pop' (TikTok-style bounce chunks), "
+            "'zoom_in' (line fades/scales in), "
+            "'standard' (static subtitles). "
+            "Can be overridden per-scene."
+        )
+    )
+    caption_properties: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Caption styling overrides (font, color, size, etc.). See VideoCaptionProperties for available keys."
+    )
 
 
 class KenBurnsKeypoint(BaseModel):
@@ -840,6 +861,10 @@ class RenderScene(BaseModel):
         ge=0.5,
         le=2.0,
         description="Voice speed for this scene (0.5=half speed, 1.0=normal, 2.0=double speed). Overrides settings.voice_speed when set."
+    )
+    caption_style: Optional[str] = Field(
+        default=None,
+        description="Caption style for this scene. Overrides settings.caption_style when set."
     )
 
     # Ken Burns specific fields

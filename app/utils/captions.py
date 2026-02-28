@@ -408,11 +408,20 @@ async def create_srt_from_word_timestamps(
         # Add .ass extension for all styles
         subtitle_path += ".ass"
         
+        # Determine chunk size for pop style
+        pop_chunk_size = (caption_properties or {}).get("pop_chunk_size", 3)
+
         # Process based on style
         if style == "highlight":
             await create_highlight_style_ass_from_timestamps(word_timestamps, duration, max_words_per_line, subtitle_path, caption_properties)
         elif style == "word_by_word":
             await create_word_by_word_style_ass_from_timestamps(word_timestamps, duration, max_words_per_line, subtitle_path)
+        elif style == "karaoke":
+            await create_karaoke_style_ass_from_timestamps(word_timestamps, duration, max_words_per_line, subtitle_path, caption_properties)
+        elif style == "pop":
+            await create_pop_style_ass_from_timestamps(word_timestamps, duration, pop_chunk_size, subtitle_path, caption_properties)
+        elif style == "zoom_in":
+            await create_zoom_in_style_ass_from_timestamps(word_timestamps, duration, max_words_per_line, subtitle_path, caption_properties)
         else:
             # Use standard ASS without special styling but with caption properties
             await create_standard_ass_from_timestamps(word_timestamps, duration, max_words_per_line, subtitle_path, caption_properties)
@@ -615,6 +624,259 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         logger.error(f"Error creating word-by-word style ASS from timestamps: {e}")
         raise
 
+async def create_karaoke_style_ass_from_timestamps(
+    word_timestamps: List[Dict],
+    duration: float,
+    max_words_per_line: int,
+    output_path: str,
+    caption_properties: Optional[Dict] = None,
+) -> None:
+    """
+    Create an ASS subtitle file with karaoke sweep effect.
+
+    Each line is shown in full; individual words sweep from a highlight colour
+    (secondary) to the base colour (primary) exactly as they are spoken, using
+    the ASS \\kf karaoke tag.
+    """
+    try:
+        style_options = prepare_subtitle_styling(caption_properties)
+
+        primary_color   = style_options.get("PrimaryColour",   "&HFFFFFF&")
+        secondary_color = style_options.get("SecondaryColour", "&H00FFFF&")  # cyan sweep
+        outline_color   = style_options.get("OutlineColour",   "&H000000&")
+        back_color      = style_options.get("BackColour",      "&H000000&")
+        font_name       = style_options.get("FontName",  "Arial")
+        font_size       = style_options.get("FontSize",  56)
+        bold            = style_options.get("Bold",      1)
+        italic          = style_options.get("Italic",    0)
+        underline       = style_options.get("Underline", 0)
+        strikeout       = style_options.get("StrikeOut", 0)
+        border_style    = style_options.get("BorderStyle", 1)
+        outline         = style_options.get("Outline",   2)
+        shadow          = style_options.get("Shadow",    1)
+        alignment       = style_options.get("Alignment", 2)
+        margin_l        = style_options.get("MarginL",   20)
+        margin_r        = style_options.get("MarginR",   20)
+        margin_v        = style_options.get("MarginV",   40)
+
+        # Group words into lines
+        lines: List[List[Dict]] = []
+        current_line: List[Dict] = []
+        for wd in word_timestamps:
+            if wd.get("word", "").strip():
+                current_line.append(wd)
+                if len(current_line) >= max_words_per_line:
+                    lines.append(current_line)
+                    current_line = []
+        if current_line:
+            lines.append(current_line)
+
+        ass_content = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+"""
+        ass_content += (
+            f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},"
+            f"{outline_color},{back_color},{bold},{italic},{underline},{strikeout},"
+            f"100,100,0,0,{border_style},{outline},{shadow},{alignment},"
+            f"{margin_l},{margin_r},{margin_v},0\n\n"
+        )
+        ass_content += "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+
+        for line_words in lines:
+            line_start = line_words[0].get("start", 0)
+            line_end   = line_words[-1].get("end", duration)
+            start_str  = format_ass_timestamp(line_start)
+            end_str    = format_ass_timestamp(line_end)
+
+            # Build karaoke text: {\kf<centiseconds>}word for each word
+            kara_parts = []
+            for wd in line_words:
+                word   = wd.get("word", "").strip()
+                w_dur  = wd.get("end", 0) - wd.get("start", 0)
+                cs     = max(1, int(round(w_dur * 100)))  # centiseconds
+                kara_parts.append(f"{{\\kf{cs}}}{word}")
+
+            kara_text = " ".join(kara_parts)
+            ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{kara_text}\n"
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(ass_content)
+
+        logger.info(f"Created karaoke ASS file at {output_path} with {len(lines)} lines")
+
+    except Exception as e:
+        logger.error(f"Error creating karaoke ASS from timestamps: {e}")
+        raise
+
+
+async def create_pop_style_ass_from_timestamps(
+    word_timestamps: List[Dict],
+    duration: float,
+    chunk_size: int,
+    output_path: str,
+    caption_properties: Optional[Dict] = None,
+) -> None:
+    """
+    Create an ASS subtitle file with TikTok-style word-pop animation.
+
+    Words appear in chunks of ``chunk_size`` (default 2-3) in ALL-CAPS with a
+    bouncy scale-in animation: scale from 0 → 115% → 100% over ~280 ms.
+    """
+    try:
+        style_options = prepare_subtitle_styling(caption_properties)
+
+        primary_color   = style_options.get("PrimaryColour",   "&HFFFFFF&")
+        secondary_color = style_options.get("SecondaryColour", "&HFFFF00&")
+        outline_color   = style_options.get("OutlineColour",   "&H000000&")
+        back_color      = style_options.get("BackColour",      "&H000000&")
+        font_name       = style_options.get("FontName",  "Arial")
+        font_size       = style_options.get("FontSize",  64)
+        bold            = style_options.get("Bold",      1)
+        italic          = style_options.get("Italic",    0)
+        underline       = style_options.get("Underline", 0)
+        strikeout       = style_options.get("StrikeOut", 0)
+        border_style    = style_options.get("BorderStyle", 1)
+        outline         = style_options.get("Outline",   3)
+        shadow          = style_options.get("Shadow",    1)
+        alignment       = style_options.get("Alignment", 2)
+        margin_l        = style_options.get("MarginL",   20)
+        margin_r        = style_options.get("MarginR",   20)
+        margin_v        = style_options.get("MarginV",   60)
+
+        # Filter valid words
+        valid_words = [wd for wd in word_timestamps if wd.get("word", "").strip()]
+
+        ass_content = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+"""
+        ass_content += (
+            f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},"
+            f"{outline_color},{back_color},{bold},{italic},{underline},{strikeout},"
+            f"100,100,0,0,{border_style},{outline},{shadow},{alignment},"
+            f"{margin_l},{margin_r},{margin_v},0\n\n"
+        )
+        ass_content += "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+
+        # Emit one dialogue event per chunk
+        for i in range(0, len(valid_words), chunk_size):
+            chunk = valid_words[i : i + chunk_size]
+            chunk_start = chunk[0].get("start", 0)
+            chunk_end   = chunk[-1].get("end", duration)
+            start_str   = format_ass_timestamp(chunk_start)
+            end_str     = format_ass_timestamp(chunk_end)
+
+            chunk_text = " ".join(wd.get("word", "").strip().upper() for wd in chunk)
+
+            # Bounce-in animation: 0→180ms scale to 115%, 180→280ms settle to 100%
+            anim = r"{\an2\fscx0\fscy0\t(0,180,\fscx115\fscy115)\t(180,280,\fscx100\fscy100)}"
+            ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{anim}{chunk_text}\n"
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(ass_content)
+
+        logger.info(f"Created pop ASS file at {output_path}")
+
+    except Exception as e:
+        logger.error(f"Error creating pop ASS from timestamps: {e}")
+        raise
+
+
+async def create_zoom_in_style_ass_from_timestamps(
+    word_timestamps: List[Dict],
+    duration: float,
+    max_words_per_line: int,
+    output_path: str,
+    caption_properties: Optional[Dict] = None,
+) -> None:
+    """
+    Create an ASS subtitle file where each caption line zooms in with a fade.
+
+    Each line starts at 80% scale and fully transparent, then animates to
+    100% scale and fully opaque over 300 ms.
+    """
+    try:
+        style_options = prepare_subtitle_styling(caption_properties)
+
+        primary_color   = style_options.get("PrimaryColour",   "&HFFFFFF&")
+        secondary_color = style_options.get("SecondaryColour", "&HFFFF00&")
+        outline_color   = style_options.get("OutlineColour",   "&H000000&")
+        back_color      = style_options.get("BackColour",      "&H000000&")
+        font_name       = style_options.get("FontName",  "Arial")
+        font_size       = style_options.get("FontSize",  56)
+        bold            = style_options.get("Bold",      1)
+        italic          = style_options.get("Italic",    0)
+        underline       = style_options.get("Underline", 0)
+        strikeout       = style_options.get("StrikeOut", 0)
+        border_style    = style_options.get("BorderStyle", 1)
+        outline         = style_options.get("Outline",   2)
+        shadow          = style_options.get("Shadow",    1)
+        alignment       = style_options.get("Alignment", 2)
+        margin_l        = style_options.get("MarginL",   20)
+        margin_r        = style_options.get("MarginR",   20)
+        margin_v        = style_options.get("MarginV",   40)
+
+        # Group words into lines
+        lines: List[List[Dict]] = []
+        current_line: List[Dict] = []
+        for wd in word_timestamps:
+            if wd.get("word", "").strip():
+                current_line.append(wd)
+                if len(current_line) >= max_words_per_line:
+                    lines.append(current_line)
+                    current_line = []
+        if current_line:
+            lines.append(current_line)
+
+        ass_content = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+"""
+        ass_content += (
+            f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},"
+            f"{outline_color},{back_color},{bold},{italic},{underline},{strikeout},"
+            f"100,100,0,0,{border_style},{outline},{shadow},{alignment},"
+            f"{margin_l},{margin_r},{margin_v},0\n\n"
+        )
+        ass_content += "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+
+        for line_words in lines:
+            line_start = line_words[0].get("start", 0)
+            line_end   = line_words[-1].get("end", duration)
+            start_str  = format_ass_timestamp(line_start)
+            end_str    = format_ass_timestamp(line_end)
+            line_text  = " ".join(wd.get("word", "").strip() for wd in line_words)
+
+            # Zoom + fade in: start at 80% scale + fully transparent → 100% + opaque over 300 ms
+            anim = r"{\an2\fscx80\fscy80\alpha&HFF&\t(0,300,\fscx100\fscy100\alpha&H00&)}"
+            ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{anim}{line_text}\n"
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(ass_content)
+
+        logger.info(f"Created zoom_in ASS file at {output_path} with {len(lines)} lines")
+
+    except Exception as e:
+        logger.error(f"Error creating zoom_in ASS from timestamps: {e}")
+        raise
+
+
 async def create_srt_from_text(text: str, duration: float, max_words_per_line: int = 10, style: str = "highlight") -> str:
     """
     Create an SRT subtitle file from text with simple timing.
@@ -658,6 +920,12 @@ async def create_srt_from_text(text: str, duration: float, max_words_per_line: i
             await create_highlight_style_ass_from_timestamps(word_timestamps, duration, max_words_per_line, output_path, None)
         elif style == "word_by_word":
             await create_word_by_word_style_ass_from_timestamps(word_timestamps, duration, max_words_per_line, output_path)
+        elif style == "karaoke":
+            await create_karaoke_style_ass_from_timestamps(word_timestamps, duration, max_words_per_line, output_path, None)
+        elif style == "pop":
+            await create_pop_style_ass_from_timestamps(word_timestamps, duration, 3, output_path, None)
+        elif style == "zoom_in":
+            await create_zoom_in_style_ass_from_timestamps(word_timestamps, duration, max_words_per_line, output_path, None)
         else:
             # Default to highlight style for any unsupported style
             logger.warning(f"Unsupported style '{style}', falling back to highlight style")

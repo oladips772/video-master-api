@@ -28,6 +28,7 @@ from app.utils.storage import storage_manager
 from app.utils.media import download_media_file
 from app.utils.image_to_video.image_processing import process_image
 from app.utils.image_to_video.video_generation import create_video_with_effects
+from app.utils.captions import create_srt_from_word_timestamps, create_srt_from_text
 import aiohttp
 
 # Configure logging
@@ -457,38 +458,156 @@ class RenderService:
             logger.error(f"Error generating animated video: {e}")
             raise RuntimeError(f"Failed to generate animated video: {e}")
     
-    async def _assemble_scene(self, job: RenderJob, scene_num: int, video_path: str, audio_path: str) -> str:
-        """Assemble scene: combine video + audio + subtitles."""
-        settings = job.render_params.get("settings", {})
-        
-        logger.info(f"Assembling scene {scene_num}")
-        
+    async def _generate_scene_captions(
+        self,
+        job: RenderJob,
+        scene_num: int,
+        audio_path: str,
+        caption_style: str,
+        caption_properties: Optional[Dict],
+    ) -> Optional[str]:
+        """
+        Transcribe scene audio with Whisper and generate an ASS caption file.
+
+        The transcription service deletes its input in a finally block, so we
+        pass it a copy of the audio file to protect the original.
+
+        Returns:
+            Absolute path to the generated .ass file, or None on failure.
+        """
         try:
-            # For now, use a simple approach: combine video and audio
-            # In the future, could add subtitle generation here
-            
+            from app.services.media.transcription import transcription_service
+
+            # Protect original audio — transcription service deletes the file it receives
+            audio_copy = os.path.join(job.temp_dir, f"scene_{scene_num}_caption_audio.mp3")
+            shutil.copy2(audio_path, audio_copy)
+
+            logger.info(f"Transcribing scene {scene_num} audio for captions (style={caption_style})")
+            trans_result = await transcription_service.transcribe(
+                file_path=audio_copy,
+                include_text=True,
+                include_srt=False,       # we generate our own ASS file
+                word_timestamps=True,
+            )
+
+            word_timestamps = trans_result.get("words", [])
+            duration = self._get_audio_duration(audio_path)
+            max_words = int((caption_properties or {}).get("max_words_per_line", 6))
+
+            if word_timestamps:
+                ass_path = await create_srt_from_word_timestamps(
+                    word_timestamps=word_timestamps,
+                    duration=duration,
+                    max_words_per_line=max_words,
+                    style=caption_style,
+                    caption_properties=caption_properties,
+                )
+            else:
+                # Fallback: distribute words evenly across the duration
+                text = trans_result.get("text", "")
+                if not text:
+                    logger.warning(f"Scene {scene_num}: transcription returned no text, skipping captions")
+                    return None
+                ass_path = await create_srt_from_text(text, duration, max_words, caption_style)
+
+            logger.info(f"Caption file generated for scene {scene_num}: {ass_path}")
+            return ass_path
+
+        except Exception as e:
+            logger.warning(f"Caption generation failed for scene {scene_num}: {e}. Skipping captions.")
+            return None
+
+    async def _assemble_scene(self, job: RenderJob, scene_num: int, video_path: str, audio_path: str) -> str:
+        """Assemble scene: combine video + audio, optionally burning in animated captions."""
+        settings = job.render_params.get("settings", {})
+        captions_enabled = settings.get("captions_enabled", False)
+
+        logger.info(f"Assembling scene {scene_num} (captions_enabled={captions_enabled})")
+
+        try:
             output_path = os.path.join(job.temp_dir, f"scene_{scene_num}_assembled.mp4")
-            
-            # Use ffmpeg to combine video and audio
+
+            if captions_enabled:
+                # Resolve caption style: scene-level overrides global
+                scene_list = job.render_params.get("scenes", [])
+                scene_data = next((s for s in scene_list if s.get("scene_number") == scene_num), {})
+                caption_style = scene_data.get("caption_style") or settings.get("caption_style", "highlight")
+                caption_properties = settings.get("caption_properties") or {}
+
+                ass_path = await self._generate_scene_captions(
+                    job, scene_num, audio_path, caption_style, caption_properties
+                )
+
+                if ass_path and os.path.exists(ass_path):
+                    # Step 1: combine video + audio (fast copy)
+                    combined_path = os.path.join(job.temp_dir, f"scene_{scene_num}_combined.mp4")
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", video_path,
+                        "-i", audio_path,
+                        "-c:v", "copy",
+                        "-c:a", "aac",
+                        "-shortest",
+                        combined_path,
+                    ]
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    if r.returncode != 0:
+                        raise RuntimeError(f"ffmpeg combine error: {r.stderr[-500:]}")
+
+                    # Step 2: burn captions (re-encode video with ass= filter)
+                    # On Linux absolute paths don't need colon escaping
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", combined_path,
+                        "-vf", f"ass={ass_path}",
+                        "-c:v", "libx264",
+                        "-preset", "fast",
+                        "-crf", "18",
+                        "-c:a", "copy",
+                        output_path,
+                    ]
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+
+                    if r.returncode != 0:
+                        logger.warning(
+                            f"Caption burn failed for scene {scene_num}: {r.stderr[-300:]}. "
+                            "Falling back to version without captions."
+                        )
+                        shutil.copy2(combined_path, output_path)
+                    else:
+                        logger.info(f"Scene {scene_num} assembled with captions: {output_path}")
+
+                    # Clean up intermediates
+                    for p in (combined_path, ass_path):
+                        try:
+                            if os.path.exists(p):
+                                os.remove(p)
+                        except Exception:
+                            pass
+
+                    return output_path
+
+                # Caption generation failed — fall through to plain assembly
+                logger.warning(f"Scene {scene_num}: caption file unavailable, assembling without captions")
+
+            # Plain assembly: video + audio, no caption burn-in
             cmd = [
-                "ffmpeg",
+                "ffmpeg", "-y",
                 "-i", video_path,
                 "-i", audio_path,
                 "-c:v", "copy",
                 "-c:a", "aac",
                 "-shortest",
-                "-y",
-                output_path
+                output_path,
             ]
-            
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            
+
             if result.returncode != 0:
-                raise RuntimeError(f"ffmpeg error: {result.stderr}")
-            
+                raise RuntimeError(f"ffmpeg error: {result.stderr[-500:]}")
+
             logger.info(f"Scene {scene_num} assembled: {output_path}")
             return output_path
-        
+
         except Exception as e:
             logger.error(f"Error assembling scene {scene_num}: {e}")
             raise RuntimeError(f"Failed to assemble scene: {e}")
