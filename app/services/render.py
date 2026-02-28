@@ -191,6 +191,8 @@ class RenderService:
         """Main processing loop for a render job."""
         try:
             job.status = "processing"
+            # Recreate temp dir in case a previous run cleaned it up (e.g. on retry)
+            os.makedirs(job.temp_dir, exist_ok=True)
             channel = job.render_params.get("channel", "kenburns")
             
             logger.info(f"Starting render job {job.job_id} with channel {channel}")
