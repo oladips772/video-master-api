@@ -502,62 +502,74 @@ class RenderService:
     
     async def _assemble_final_video(self, job: RenderJob):
         """Assemble final video from all scenes."""
+        concat_temp_dir = None
         try:
             logger.info(f"Assembling final video from {len(job.scenes)} scenes")
-            
-            # Get video paths in order
-            video_urls = []
-            for scene_num in sorted(job.scenes.keys()):
-                video_url = job.scenes[scene_num]["video_url"]
-                if video_url:
-                    video_urls.append(video_url)
-            
+
+            # Get video URLs in scene order
+            video_urls = [
+                job.scenes[num]["video_url"]
+                for num in sorted(job.scenes.keys())
+                if job.scenes[num]["video_url"]
+            ]
+
             if not video_urls:
                 raise RuntimeError("No completed scenes found")
-            
-            # Use existing concatenation service
+
             settings = job.render_params.get("settings", {})
-            transition_type = settings.get("transition_type", "cut")
-            
+
             result = await concatenate_videos(
                 job_id=job.job_id,
                 video_urls=video_urls,
                 output_format=".mp4"
             )
-            
-            final_path = result.get("path")
+
+            # local_path is the actual filesystem file; path is the S3 key
+            final_local_path = result.get("local_path") or result.get("path")
             final_url = result.get("url")
-            
+            concat_temp_dir = result.get("_temp_dir")
+
             # Add background music if provided
             bg_music_url = settings.get("background_music")
-            if bg_music_url:
+            if bg_music_url and final_local_path and os.path.exists(final_local_path):
                 logger.info(f"Adding background music: {bg_music_url}")
-                final_path = await self._add_background_music(
+                final_local_path = await self._add_background_music(
                     job,
-                    final_path,
+                    final_local_path,
                     str(bg_music_url),
                     settings.get("background_music_volume", 0.3)
                 )
-                # Re-upload if modified
-                final_url = storage_manager.upload_file(final_path, f"renders/{job.job_id}/final.mp4")
-            
+                raw_url = storage_manager.upload_file(final_local_path, f"renders/{job.job_id}/final.mp4")
+                final_url = raw_url.split("?")[0] if raw_url and "?" in raw_url else raw_url
+
             job.final_video_url = final_url
-            job.final_file_size = os.path.getsize(final_path) if os.path.exists(final_path) else None
-            
+            job.final_file_size = (
+                os.path.getsize(final_local_path)
+                if final_local_path and os.path.exists(final_local_path)
+                else None
+            )
+
             logger.info(f"Final video assembled: {final_url}")
-        
+
         except Exception as e:
             logger.error(f"Error assembling final video: {e}")
             raise RuntimeError(f"Failed to assemble final video: {e}")
+
+        finally:
+            # Clean up the concat temp dir (separate from job.temp_dir)
+            if concat_temp_dir and os.path.exists(concat_temp_dir):
+                try:
+                    shutil.rmtree(concat_temp_dir)
+                    logger.info(f"Cleaned up concat temp dir: {concat_temp_dir}")
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to cleanup concat temp dir: {cleanup_err}")
     
     async def _add_background_music(self, job: RenderJob, video_path: str, bg_music_url: str, volume: float) -> str:
         """Add background music to final video."""
         try:
-            # Download background music
-            bg_audio_path = os.path.join(job.temp_dir, "background_music.mp3")
-            
             logger.info(f"Downloading background music from {bg_music_url}")
-            await download_media_file(bg_music_url, bg_audio_path)
+            # download_media_file(url, temp_dir) → returns (local_path, extension)
+            bg_audio_path, _ = await download_media_file(bg_music_url, job.temp_dir)
             
             # Get video duration
             result = subprocess.run(

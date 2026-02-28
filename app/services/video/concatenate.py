@@ -96,16 +96,15 @@ async def concatenate_videos(job_id: str, video_urls: List[str], output_format: 
                         await asyncio.sleep(2 * (attempt + 1))  # Progressive backoff
                     continue
                     
-                # Clean up temporary files
-                cleanup_temp_files(temp_dir)
-
                 #remove signed url from s3
                 upload_result = upload_result.split("?")[0]
-                
-                # Return result as VideoConcatenateResult dict
+
+                # Return result — caller is responsible for cleaning up _temp_dir
                 return {
-                    "url": upload_result,  # upload_result is already the URL string
-                    "path": object_name
+                    "url": upload_result,
+                    "path": object_name,       # S3 object key
+                    "local_path": final_output, # actual filesystem path for post-processing
+                    "_temp_dir": temp_dir       # caller must clean this up
                 }
             except Exception as e:
                 logger.error(f"Error uploading to S3 (attempt {attempt+1}/3): {e}")
