@@ -19,24 +19,27 @@ KOKORO_TIMEOUT = int(os.environ.get("KOKORO_TIMEOUT", "30"))  # seconds
 async def generate_speech(
     text: str,
     voice: str = "af_alloy",
+    speed: float = 1.0,
 ) -> bytes:
     """
     Generate speech from text using the external Kokoro TTS API.
-    
+
     Args:
         text: Text to convert to speech
         voice: Name of the Kokoro voice to use
-        
+        speed: Speech speed multiplier (0.5–2.0). 1.0 = normal, 0.9 = slightly slower.
+
     Returns:
         Audio data bytes
     """
     try:
-        logger.info(f"Calling Kokoro TTS service with voice: {voice}")
-        
+        logger.info(f"Calling Kokoro TTS service with voice: {voice}, speed: {speed}")
+
         # Prepare request data - MUST use "input" for text
         data = {
             "input": text,  # API expects "input", not "text"
             "voice": voice,
+            "speed": speed,
         }
         
         # Log exact request details for debugging

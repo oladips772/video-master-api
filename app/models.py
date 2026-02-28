@@ -784,6 +784,12 @@ class RenderSettings(BaseModel):
         le=2000,
         description="Duration of transition effect in milliseconds"
     )
+    voice_speed: float = Field(
+        default=1.0,
+        ge=0.5,
+        le=2.0,
+        description="Global voice speed for all scenes (0.5=half speed, 1.0=normal, 2.0=double speed). Can be overridden per-scene."
+    )
 
 
 class KenBurnsKeypoint(BaseModel):
@@ -829,7 +835,13 @@ class RenderScene(BaseModel):
         default="af_heart",
         description="Kokoro voice ID (e.g., 'af_heart', 'am_adam', 'af_bella', etc.)"
     )
-    
+    voice_speed: Optional[float] = Field(
+        default=None,
+        ge=0.5,
+        le=2.0,
+        description="Voice speed for this scene (0.5=half speed, 1.0=normal, 2.0=double speed). Overrides settings.voice_speed when set."
+    )
+
     # Ken Burns specific fields
     pan_direction: Optional[str] = Field(
         default=None,

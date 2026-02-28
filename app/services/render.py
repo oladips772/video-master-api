@@ -319,13 +319,18 @@ class RenderService:
         scene_num = scene.get("scene_number")
         max_attempts = int(os.environ.get("KOKORO_MAX_RETRIES", "3"))
 
-        logger.info(f"Generating voiceover for scene {scene_num} with voice {voice_id}")
+        # Scene-level speed overrides the global settings speed
+        settings = job.render_params.get("settings", {})
+        speed = scene.get("voice_speed") or settings.get("voice_speed", 1.0)
+        speed = float(speed)
+
+        logger.info(f"Generating voiceover for scene {scene_num} with voice {voice_id}, speed {speed}")
 
         last_error = None
         for attempt in range(1, max_attempts + 1):
             try:
                 async with self._tts_semaphore:
-                    audio_data = await generate_speech(text, voice_id)
+                    audio_data = await generate_speech(text, voice_id, speed)
 
                 if not audio_data or len(audio_data) < 100:
                     raise RuntimeError(
