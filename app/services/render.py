@@ -225,21 +225,29 @@ class RenderService:
     async def _process_scenes_batched(self, job: RenderJob, channel: str):
         """Process scenes in parallel batches."""
         scene_list = job.render_params.get("scenes", [])
-        total_scenes = len(scene_list)
-        
-        for batch_start in range(0, total_scenes, BATCH_SIZE):
-            batch_end = min(batch_start + BATCH_SIZE, total_scenes)
-            batch = scene_list[batch_start:batch_end]
-            
-            logger.info(f"Processing batch {batch_start//BATCH_SIZE + 1}: scenes {batch_start+1}-{batch_end}")
-            
-            # Process all scenes in batch in parallel
-            tasks = [
+
+        # Only process scenes that are still pending — skip already-completed or
+        # in-progress ones so that retries don't double-count completed_scenes.
+        scenes_to_process = [
+            scene for scene in scene_list
+            if job.scenes.get(scene.get("scene_number"), {}).get("status") == "pending"
+        ]
+        total = len(scenes_to_process)
+
+        logger.info(f"Scenes to process: {[s.get('scene_number') for s in scenes_to_process]}")
+
+        for batch_start in range(0, total, BATCH_SIZE):
+            batch = scenes_to_process[batch_start:batch_start + BATCH_SIZE]
+
+            logger.info(
+                f"Processing batch {batch_start // BATCH_SIZE + 1}: "
+                f"scenes {[s.get('scene_number') for s in batch]}"
+            )
+
+            await asyncio.gather(*[
                 self._process_scene(job, scene, channel)
                 for scene in batch
-            ]
-            
-            await asyncio.gather(*tasks)
+            ])
     
     async def _process_scene(self, job: RenderJob, scene: Dict[str, Any], channel: str):
         """Process a single scene."""
