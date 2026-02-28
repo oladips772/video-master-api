@@ -1,11 +1,24 @@
 """
 Service for generating images via Together AI (FLUX.1-schnell).
 """
+import asyncio
 import os
 import logging
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+# Together AI free tier: 60 RPM = 1 QPS. This semaphore ensures only one
+# request fires at a time, with a 1-second gap enforced after each call.
+# Lazily initialised so it is always tied to the running event loop.
+_rate_limit_semaphore: "asyncio.Semaphore | None" = None
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    global _rate_limit_semaphore
+    if _rate_limit_semaphore is None:
+        _rate_limit_semaphore = asyncio.Semaphore(1)
+    return _rate_limit_semaphore
 
 TOGETHER_BASE_URL = "https://api.together.xyz/v1"
 TOGETHER_MODEL    = "black-forest-labs/FLUX.1-schnell"
@@ -60,6 +73,14 @@ class TogetherAIService:
             f"{dims['width']}x{dims['height']}, prompt={prompt[:80]}..."
         )
 
+        async with _get_semaphore():
+            result = await self._do_generate(payload)
+            # Hold the semaphore for 1 second to stay within 1 QPS
+            await asyncio.sleep(1)
+        return result
+
+    async def _do_generate(self, payload: dict) -> bytes:
+        """Inner HTTP call, always called while _rate_limit_semaphore is held."""
         timeout = aiohttp.ClientTimeout(total=60)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             # Step 1: generate image and get temporary URL
