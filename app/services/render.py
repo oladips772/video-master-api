@@ -315,6 +315,12 @@ class RenderService:
             if image_provider == "kie":
                 resolution = settings.get("resolution", "1080")
                 image_data = await kie_ai_service.generate_image(prompt, aspect_ratio, resolution)
+            elif image_provider == "puter":
+                from app.services.puter_ai import get_puter_image_service
+                image_data = await get_puter_image_service().generate_image(prompt, aspect_ratio)
+            elif image_provider == "openrouter":
+                from app.services.openrouter_ai import get_openrouter_image_service
+                image_data = await get_openrouter_image_service().generate_image(prompt, aspect_ratio)
             else:
                 # Default: Together AI
                 from app.services.together_ai import get_together_ai_service

@@ -791,10 +791,13 @@ class RenderSettings(BaseModel):
         description="Global voice speed for all scenes (0.5=half speed, 1.0=normal, 2.0=double speed). Can be overridden per-scene."
     )
     image_provider: str = Field(
-        default="together",
+        default="openrouter",
         description=(
             "Image generation provider for all scenes. "
-            "Options: 'together' (Together AI FLUX.1-schnell, default) or 'kie' (Kie.ai Flux-2 Pro)."
+            "Options: 'openrouter' (Gemini 2.5 Flash via OpenRouter, default), "
+            "'puter' (FLUX.1-schnell-Free via Puter AI), "
+            "'together' (Together AI FLUX.1-schnell), "
+            "or 'kie' (Kie.ai Flux-2 Pro)."
         )
     )
     captions_enabled: bool = Field(
@@ -823,7 +826,7 @@ class RenderSettings(BaseModel):
     @field_validator("image_provider")
     @classmethod
     def validate_image_provider(cls, v: str) -> str:
-        allowed = {"together", "kie"}
+        allowed = {"together", "kie", "puter", "openrouter"}
         if v not in allowed:
             raise ValueError(f"image_provider must be one of {allowed}, got '{v}'")
         return v
