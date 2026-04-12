@@ -1,19 +1,17 @@
 """
-Service for generating images via OpenRouter (Gemini 2.5 Flash Image Preview).
+Service for generating images via OpenRouter (Gemini 2.0 Flash).
+
+OpenRouter does not have an /images/generations endpoint.
+Image generation is done via /chat/completions with a Gemini model
+that supports image output — the image is returned as a base64
+inline_data part inside the assistant message content.
 """
 import os
 import base64
 import logging
-import httpx
+import aiohttp
 
 logger = logging.getLogger(__name__)
-
-DIMENSION_MAP = {
-    "16:9": {"width": 1344, "height": 768},
-    "9:16": {"width": 768,  "height": 1344},
-    "1:1":  {"width": 1024, "height": 1024},
-    "4:3":  {"width": 1024, "height": 768},
-}
 
 
 class OpenRouterImageService:
@@ -25,46 +23,77 @@ class OpenRouterImageService:
 
     async def generate_image(self, prompt: str, aspect_ratio: str = "16:9") -> bytes:
         """
-        Generate an image via OpenRouter using Gemini 2.5 Flash Image Preview.
+        Generate an image via OpenRouter using Gemini 2.0 Flash Exp (free).
+
+        The model returns the image as a base64-encoded inline_data part
+        inside the chat completions response.
 
         Args:
             prompt:       Text prompt for image generation.
-            aspect_ratio: One of "16:9", "9:16", "1:1", "4:3".
+            aspect_ratio: Aspect ratio hint appended to the prompt.
 
         Returns:
             Raw image bytes.
         """
-        dims = DIMENSION_MAP.get(aspect_ratio, DIMENSION_MAP["16:9"])
+        logger.info(f"Requesting OpenRouter image: ratio={aspect_ratio}, prompt={prompt[:80]}...")
 
-        logger.info(
-            f"Requesting OpenRouter image: ratio={aspect_ratio} "
-            f"{dims['width']}x{dims['height']}, prompt={prompt[:80]}..."
+        # Gemini image generation is triggered via chat completions.
+        # Appending the aspect ratio to the prompt is the only way to hint dimensions.
+        full_prompt = f"{prompt}. Aspect ratio: {aspect_ratio}."
+
+        payload = {
+            "model": "google/gemini-2.0-flash-exp:free",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": full_prompt,
+                }
+            ],
+            "modalities": ["image", "text"],
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        timeout = aiohttp.ClientTimeout(total=120)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(
+                        f"OpenRouter API error {response.status}: {error_text[:300]}"
+                    )
+                data = await response.json()
+
+        # Extract base64 image from the response content parts
+        content = data["choices"][0]["message"].get("content", "")
+
+        # Content may be a list of parts (text + image) or a plain string
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    image_url = part["image_url"]["url"]
+                    if image_url.startswith("data:"):
+                        # data:<mime>;base64,<data>
+                        b64_data = image_url.split(",", 1)[1]
+                        image_bytes = base64.b64decode(b64_data)
+                        logger.info(f"OpenRouter image decoded: {len(image_bytes)} bytes")
+                        return image_bytes
+                elif isinstance(part, dict) and part.get("type") == "inline_data":
+                    image_bytes = base64.b64decode(part["inline_data"]["data"])
+                    logger.info(f"OpenRouter image decoded: {len(image_bytes)} bytes")
+                    return image_bytes
+
+        raise RuntimeError(
+            f"OpenRouter response contained no image part. "
+            f"Response: {str(data)[:400]}"
         )
-
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                f"{self.base_url}/images/generations",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "google/gemini-2.5-flash-preview-05-20:free",
-                    "prompt": prompt,
-                    "width": dims["width"],
-                    "height": dims["height"],
-                    "n": 1,
-                    "response_format": "b64_json",
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        image_b64 = data["data"][0]["b64_json"]
-        image_bytes = base64.b64decode(image_b64)
-
-        logger.info(f"OpenRouter image decoded: {len(image_bytes)} bytes")
-        return image_bytes
 
 
 # Lazy singleton
