@@ -300,10 +300,10 @@ class RenderService:
             job.failed_scenes += 1
     
     async def _generate_image_for_scene(self, job: RenderJob, scene: Dict[str, Any]) -> bytes:
-        """Generate image using the provider specified in settings (default: Together AI)."""
+        """Generate image using the provider specified in settings (default: Cloudflare Worker)."""
         settings = job.render_params.get("settings", {})
         aspect_ratio = settings.get("aspect_ratio", "16:9")
-        image_provider = settings.get("image_provider", "together")
+        image_provider = settings.get("image_provider", "cloudflare")
         prompt = scene.get("image_prompt")
         scene_num = scene.get("scene_number")
 
@@ -318,10 +318,13 @@ class RenderService:
             elif image_provider == "openrouter":
                 from app.services.openrouter_ai import get_openrouter_image_service
                 image_data = await get_openrouter_image_service().generate_image(prompt, aspect_ratio)
-            else:
-                # Default: Together AI
+            elif image_provider == "together":
                 from app.services.together_ai import get_together_ai_service
                 image_data = await get_together_ai_service().generate_image(prompt, aspect_ratio)
+            else:
+                # Default: Cloudflare Worker (Stable Diffusion XL)
+                from app.services.cloudflare_worker import get_cloudflare_worker_service
+                image_data = await get_cloudflare_worker_service().generate_image(prompt, aspect_ratio)
 
             # Save to temp file
             temp_image_path = os.path.join(job.temp_dir, f"scene_{scene_num}_image.jpg")

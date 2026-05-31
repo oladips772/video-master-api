@@ -791,10 +791,11 @@ class RenderSettings(BaseModel):
         description="Global voice speed for all scenes (0.5=half speed, 1.0=normal, 2.0=double speed). Can be overridden per-scene."
     )
     image_provider: str = Field(
-        default="openrouter",
+        default="cloudflare",
         description=(
             "Image generation provider for all scenes. "
-            "Options: 'openrouter' (Gemini 2.5 Flash via OpenRouter, default), "
+            "Options: 'cloudflare' (Cloudflare Worker Stable Diffusion XL, default), "
+            "'openrouter' (Gemini 2.5 Flash via OpenRouter), "
             "'together' (Together AI FLUX.1-schnell), "
             "or 'kie' (Kie.ai Flux-2 Pro)."
         )
@@ -825,7 +826,7 @@ class RenderSettings(BaseModel):
     @field_validator("image_provider")
     @classmethod
     def validate_image_provider(cls, v: str) -> str:
-        allowed = {"together", "kie", "openrouter"}
+        allowed = {"together", "kie", "openrouter", "cloudflare"}
         if v not in allowed:
             raise ValueError(f"image_provider must be one of {allowed}, got '{v}'")
         return v
