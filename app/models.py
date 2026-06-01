@@ -969,4 +969,92 @@ class RenderRetryRequest(BaseModel):
     failed_scene_numbers: Optional[List[int]] = Field(
         default=None,
         description="List of specific scene numbers to retry. If not provided, retries all failed scenes."
-    ) 
+    )
+
+
+# ============================================================================
+# REDDIT RENDER MODELS (Reddit Channel)
+# ============================================================================
+
+class RedditRenderRequest(BaseModel):
+    """Request model for the Reddit render channel.
+
+    Single-shot pipeline: TTS the script, loop a stock background video to
+    match the audio length, burn TikTok-style captions, optionally mix in
+    background music, upload to S3.
+    """
+    title: str = Field(
+        description="Title of the reddit video (used for logging/labelling — not rendered into the video)."
+    )
+    script: str = Field(
+        min_length=1,
+        description="Full reddit story text. Sent to Kokoro TTS as a single utterance."
+    )
+    voice_id: str = Field(
+        default="af_heart",
+        description="Kokoro voice ID (e.g. 'af_heart', 'am_adam'). Same voice catalogue as the kenburns channel."
+    )
+    background: str = Field(
+        description="Key into the BACKGROUNDS registry (app/services/backgrounds.py). e.g. 'minecraft', 'subway_surfers', 'gta', 'satisfying'."
+    )
+    aspect_ratio: str = Field(
+        default="9:16",
+        description="Output aspect ratio. Currently '9:16' (1080x1920) or '16:9' (1920x1080)."
+    )
+    captions: bool = Field(
+        default=True,
+        description="Burn TikTok-style captions onto the video. Requires whisper transcription of the narration."
+    )
+    caption_style: str = Field(
+        default="tiktok",
+        description="Caption style. 'tiktok' = bouncy all-caps chunks, white fill, black outline (maps to the existing 'pop' style)."
+    )
+    background_music_url: Optional[AnyUrl] = Field(
+        default=None,
+        description="Optional URL of background music to mix under the narration at low volume."
+    )
+    background_music_volume: float = Field(
+        default=0.08,
+        ge=0.0,
+        le=1.0,
+        description="Volume for background music relative to narration (0.0–1.0). Default 0.08."
+    )
+    voice_speed: float = Field(
+        default=1.0,
+        ge=0.5,
+        le=2.0,
+        description="Speech speed multiplier passed to Kokoro TTS."
+    )
+    webhook_url: Optional[AnyUrl] = Field(
+        default=None,
+        description="Optional webhook to POST when the job completes or fails."
+    )
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def validate_aspect_ratio(cls, v: str) -> str:
+        if v not in {"9:16", "16:9"}:
+            raise ValueError("aspect_ratio must be '9:16' or '16:9'")
+        return v
+
+
+class RedditRenderResponse(BaseModel):
+    """Response from POST /v1/render/reddit."""
+    job_id: str
+    status: str
+    monitor_url: str
+
+
+class RedditJobStatus(BaseModel):
+    """Status response for a reddit render job."""
+    job_id: str
+    status: str  # pending, processing, completed, failed
+    stage: Optional[str] = Field(
+        default=None,
+        description="Current pipeline stage: 'tts', 'loop_bg', 'captions', 'merge', 'upload'."
+    )
+    progress_percent: int = Field(ge=0, le=100)
+    final_video_url: Optional[AnyUrl] = None
+    final_file_size: Optional[int] = None
+    audio_duration_seconds: Optional[float] = None
+    error: Optional[str] = None

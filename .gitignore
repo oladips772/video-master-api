@@ -38,5 +38,10 @@ temp/
 temp/**/*
 !temp/.gitkeep
 
+# Reddit channel background videos — large binaries, distributed out-of-band
+assets/backgrounds/*
+!assets/backgrounds/README.md
+!assets/backgrounds/.gitkeep
+
 # Logs
-*.log 
+*.log
