@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional
 
 import aiohttp
 
-from app.services.audio.text_to_speech import generate_speech
+from app.services.audio.text_to_speech import generate_speech, generate_speech_chunked
 from app.services.backgrounds import resolve_background
 from app.utils.captions import create_srt_from_word_timestamps, create_srt_from_text
 from app.utils.media import download_media_file
@@ -201,21 +201,29 @@ class RedditRenderService:
 
         logger.info(f"[reddit:{job.job_id}] TTS voice={voice} speed={speed} chars={len(text)}")
 
+        path = os.path.join(job.temp_dir, "narration.mp3")
+        use_chunked = len(text) > 400
+
         last_err: Optional[Exception] = None
         for attempt in range(1, max_attempts + 1):
             try:
                 async with self._tts_semaphore:
-                    audio_data = await generate_speech(text, voice, speed)
-
-                if not audio_data or len(audio_data) < 100:
-                    raise RuntimeError(
-                        f"Kokoro returned empty/invalid audio "
-                        f"({len(audio_data) if audio_data else 0} bytes)"
-                    )
-
-                path = os.path.join(job.temp_dir, "narration.mp3")
-                with open(path, "wb") as f:
-                    f.write(audio_data)
+                    if use_chunked:
+                        await generate_speech_chunked(text, voice, speed, path)
+                        size = os.path.getsize(path) if os.path.exists(path) else 0
+                        if size < 100:
+                            raise RuntimeError(
+                                f"Chunked TTS produced empty/invalid audio ({size} bytes)"
+                            )
+                    else:
+                        audio_data = await generate_speech(text, voice, speed)
+                        if not audio_data or len(audio_data) < 100:
+                            raise RuntimeError(
+                                f"Kokoro returned empty/invalid audio "
+                                f"({len(audio_data) if audio_data else 0} bytes)"
+                            )
+                        with open(path, "wb") as f:
+                            f.write(audio_data)
                 return path
 
             except Exception as e:

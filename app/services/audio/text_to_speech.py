@@ -2,11 +2,14 @@
 Service for converting text to speech using external Kokoro TTS API.
 """
 import os
+import re
 import uuid
 import asyncio
 import logging
 import json
+import subprocess
 import aiohttp
+from typing import List
 from app.utils.storage import storage_manager
 
 # Configure logging
@@ -72,6 +75,99 @@ async def generate_speech(
     except Exception as e:
         logger.error(f"Unexpected error calling Kokoro API: {e}")
         raise ValueError(f"Failed to generate speech with Kokoro: {e}")
+
+
+def _split_into_sentences(text: str) -> List[str]:
+    """Split on sentence-ending punctuation followed by whitespace, and paragraph breaks."""
+    parts = re.split(r'(?<=[.!?])\s+|\n\n+', text.strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _chunk_text(text: str, max_chars: int) -> List[str]:
+    """Group sentences into chunks under max_chars. Each chunk contains at least one sentence."""
+    sentences = _split_into_sentences(text)
+    if not sentences:
+        return []
+    chunks: List[str] = []
+    current = ""
+    for sent in sentences:
+        if not current:
+            current = sent
+        elif len(current) + 1 + len(sent) <= max_chars:
+            current = current + " " + sent
+        else:
+            chunks.append(current)
+            current = sent
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def generate_speech_chunked(
+    text: str,
+    voice: str = "af_alloy",
+    speed: float = 1.0,
+    output_path: str = "",
+    max_chars: int = 400,
+) -> str:
+    """Split text into sentence-aware chunks, TTS each, concatenate to output_path with FFmpeg."""
+    if not output_path:
+        raise ValueError("output_path is required for generate_speech_chunked")
+
+    chunks = _chunk_text(text, max_chars)
+    if not chunks:
+        raise ValueError("No text content to synthesize")
+
+    logger.info(
+        f"Chunked TTS: {len(text)} chars → {len(chunks)} chunks (max_chars={max_chars})"
+    )
+
+    work_dir = os.path.dirname(output_path) or "."
+    os.makedirs(work_dir, exist_ok=True)
+    run_id = uuid.uuid4().hex
+
+    chunk_paths: List[str] = []
+    list_path = os.path.join(work_dir, f"_tts_concat_{run_id}.txt")
+
+    try:
+        for i, chunk in enumerate(chunks):
+            audio_data = await generate_speech(chunk, voice, speed)
+            if not audio_data or len(audio_data) < 100:
+                raise RuntimeError(
+                    f"Kokoro returned empty audio for chunk {i + 1}/{len(chunks)} "
+                    f"({len(audio_data) if audio_data else 0} bytes)"
+                )
+            chunk_path = os.path.join(work_dir, f"_tts_chunk_{run_id}_{i}.mp3")
+            with open(chunk_path, "wb") as f:
+                f.write(audio_data)
+            chunk_paths.append(chunk_path)
+
+        with open(list_path, "w") as f:
+            for p in chunk_paths:
+                f.write(f"file '{p}'\n")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", list_path,
+            "-c", "copy",
+            output_path,
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise RuntimeError(f"ffmpeg concat failed: {r.stderr[-500:]}")
+
+        logger.info(f"Chunked TTS concatenated → {output_path}")
+        return output_path
+
+    finally:
+        for p in chunk_paths + [list_path]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError as e:
+                    logger.warning(f"Failed to remove chunk temp {p}: {e}")
 
 
 async def process_text_to_speech(params: dict) -> dict:
