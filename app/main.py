@@ -35,7 +35,10 @@ from app.utils.auth import get_api_key
 from app.routes.image.image_to_video import router as image_to_video_router
 from app.routes.image.image_overlay import router as image_overlay_router
 from app.routes.image.video_overlay import router as video_overlay_router
-from app.routes.audio.text_to_speech import router as text_to_speech_router
+from app.routes.audio.text_to_speech import (
+    router as text_to_speech_router,
+    tts_router as tts_speakers_router,
+)
 from app.routes.media.transcription import router as media_transcription_router
 from app.routes.video import router as video_router
 from app.routes.render import router as render_router
@@ -93,6 +96,7 @@ app.include_router(image_to_video_router, dependencies=[Depends(get_api_key)])
 app.include_router(image_overlay_router, dependencies=[Depends(get_api_key)])
 app.include_router(video_overlay_router, dependencies=[Depends(get_api_key)])
 app.include_router(text_to_speech_router, dependencies=[Depends(get_api_key)])
+app.include_router(tts_speakers_router, dependencies=[Depends(get_api_key)])
 app.include_router(media_transcription_router, dependencies=[Depends(get_api_key)])
 app.include_router(video_router, prefix="/v1/video", dependencies=[Depends(get_api_key)])
 app.include_router(render_router, dependencies=[Depends(get_api_key)])

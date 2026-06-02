@@ -988,11 +988,19 @@ class RedditRenderRequest(BaseModel):
     )
     script: str = Field(
         min_length=1,
-        description="Full reddit story text. Sent to Kokoro TTS as a single utterance."
+        description="Full reddit story text. Sent to the TTS provider; long scripts are chunked at sentence boundaries."
+    )
+    voice_provider: str = Field(
+        default="xtts",
+        description="TTS backend. 'xtts' = Coqui XTTS-v2 (default), 'kokoro' = Kokoro fastapi."
+    )
+    speaker: str = Field(
+        default="Claribel Daws",
+        description="XTTS-v2 speaker name (used when voice_provider='xtts'). See GET /v1/tts/speakers."
     )
     voice_id: str = Field(
         default="af_heart",
-        description="Kokoro voice ID (e.g. 'af_heart', 'am_adam'). Same voice catalogue as the kenburns channel."
+        description="Kokoro voice ID (used when voice_provider='kokoro'). e.g. 'af_heart', 'am_adam'."
     )
     background: str = Field(
         description="Key into the BACKGROUNDS registry (app/services/backgrounds.py). e.g. 'minecraft', 'subway_surfers', 'gta', 'satisfying'."
@@ -1035,6 +1043,14 @@ class RedditRenderRequest(BaseModel):
     def validate_aspect_ratio(cls, v: str) -> str:
         if v not in {"9:16", "16:9"}:
             raise ValueError("aspect_ratio must be '9:16' or '16:9'")
+        return v
+
+    @field_validator("voice_provider")
+    @classmethod
+    def validate_voice_provider(cls, v: str) -> str:
+        v = (v or "").lower()
+        if v not in {"xtts", "kokoro"}:
+            raise ValueError("voice_provider must be 'xtts' or 'kokoro'")
         return v
 
 

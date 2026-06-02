@@ -8,6 +8,7 @@ import asyncio
 import logging
 import json
 import subprocess
+import tempfile
 import aiohttp
 from typing import List
 from app.utils.storage import storage_manager
@@ -18,6 +19,12 @@ logger = logging.getLogger(__name__)
 # Kokoro API settings
 KOKORO_API_URL = os.environ.get("KOKORO_API_URL", "http://kokoro-tts:8880/v1/audio/speech")
 KOKORO_TIMEOUT = int(os.environ.get("KOKORO_TIMEOUT", "30"))  # seconds
+
+# XTTS-v2 (Coqui) API settings
+XTTS_API_URL = os.environ.get("XTTS_API_URL", "http://xtts:5002").rstrip("/")
+XTTS_TIMEOUT = int(os.environ.get("XTTS_TIMEOUT", "120"))  # seconds
+XTTS_DEFAULT_SPEAKER = os.environ.get("XTTS_DEFAULT_SPEAKER", "Claribel Daws")
+XTTS_DEFAULT_LANGUAGE = os.environ.get("XTTS_DEFAULT_LANGUAGE", "en")
 
 async def generate_speech(
     text: str,
@@ -77,6 +84,111 @@ async def generate_speech(
         raise ValueError(f"Failed to generate speech with Kokoro: {e}")
 
 
+async def generate_speech_xtts(
+    text: str,
+    voice: str = XTTS_DEFAULT_SPEAKER,
+    speed: float = 1.0,
+) -> bytes:
+    """
+    Generate speech from text using the XTTS-v2 (Coqui) REST API.
+
+    Args:
+        text: Text to convert to speech
+        voice: XTTS speaker name (e.g. "Claribel Daws"). Falls back to
+            XTTS_DEFAULT_SPEAKER if empty.
+        speed: Speech speed multiplier. XTTS-v2 has no native speed param, so
+            speeds != 1.0 are applied via FFmpeg's atempo filter during the
+            wav→mp3 conversion.
+
+    Returns:
+        MP3-encoded audio bytes.
+    """
+    speaker = voice or XTTS_DEFAULT_SPEAKER
+
+    form = {
+        "text": text,
+        "speaker_id": speaker,
+        "language": XTTS_DEFAULT_LANGUAGE,
+        "style_wav": "",
+    }
+
+    url = f"{XTTS_API_URL}/api/tts"
+    logger.info(f"Calling XTTS speaker={speaker} chars={len(text)} url={url}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=XTTS_TIMEOUT),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"XTTS API error {response.status}: {error_text}")
+                    raise ValueError(f"XTTS API returned {response.status}: {error_text}")
+                wav_data = await response.read()
+                logger.info(f"Received {len(wav_data)} bytes of wav audio from XTTS")
+    except aiohttp.ClientError as e:
+        logger.error(f"Error connecting to XTTS API: {e}")
+        raise ValueError(f"Failed to connect to XTTS API: {e}")
+
+    # wav → mp3 via ffmpeg (apply atempo when speed != 1.0)
+    wav_fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="_xtts_")
+    os.close(wav_fd)
+    mp3_path = wav_path[:-4] + ".mp3"
+    try:
+        with open(wav_path, "wb") as f:
+            f.write(wav_data)
+
+        cmd = ["ffmpeg", "-y", "-i", wav_path]
+        if abs(speed - 1.0) > 1e-3:
+            cmd += ["-filter:a", f"atempo={speed}"]
+        cmd += ["-codec:a", "libmp3lame", "-qscale:a", "2", mp3_path]
+
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            raise RuntimeError(f"ffmpeg wav→mp3 failed: {r.stderr[-500:]}")
+
+        with open(mp3_path, "rb") as f:
+            return f.read()
+    finally:
+        for p in (wav_path, mp3_path):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError as e:
+                    logger.warning(f"Failed to remove xtts temp {p}: {e}")
+
+
+async def get_xtts_voices() -> List[str]:
+    """Return the list of available XTTS-v2 speaker names from the server."""
+    url = f"{XTTS_API_URL}/api/speakers"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=XTTS_TIMEOUT),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise ValueError(f"XTTS speakers endpoint returned {response.status}: {error_text}")
+                payload = await response.json(content_type=None)
+    except aiohttp.ClientError as e:
+        raise ValueError(f"Failed to connect to XTTS speakers endpoint: {e}")
+
+    # The Coqui server returns either a flat list of names or a list of dicts.
+    voices: List[str] = []
+    if isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, str):
+                voices.append(item)
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("speaker") or item.get("id")
+                if name:
+                    voices.append(name)
+    return voices
+
+
 def _split_into_sentences(text: str) -> List[str]:
     """Split on sentence-ending punctuation followed by whitespace, and paragraph breaks."""
     parts = re.split(r'(?<=[.!?])\s+|\n\n+', text.strip())
@@ -105,21 +217,33 @@ def _chunk_text(text: str, max_chars: int) -> List[str]:
 
 async def generate_speech_chunked(
     text: str,
-    voice: str = "af_alloy",
-    speed: float = 1.0,
-    output_path: str = "",
+    voice: str,
+    speed: float,
+    output_path: str,
     max_chars: int = 400,
+    provider: str = "xtts",
 ) -> str:
-    """Split text into sentence-aware chunks, TTS each, concatenate to output_path with FFmpeg."""
+    """Split text into sentence-aware chunks, TTS each, concatenate to output_path with FFmpeg.
+
+    Args:
+        provider: Which TTS backend to use per chunk. "xtts" (default) routes
+            through ``generate_speech_xtts``; "kokoro" routes through the
+            existing ``generate_speech`` Kokoro path.
+    """
     if not output_path:
         raise ValueError("output_path is required for generate_speech_chunked")
+
+    provider = (provider or "xtts").lower()
+    if provider not in {"xtts", "kokoro"}:
+        raise ValueError(f"Unknown TTS provider: {provider}")
 
     chunks = _chunk_text(text, max_chars)
     if not chunks:
         raise ValueError("No text content to synthesize")
 
     logger.info(
-        f"Chunked TTS: {len(text)} chars → {len(chunks)} chunks (max_chars={max_chars})"
+        f"Chunked TTS [{provider}]: {len(text)} chars → {len(chunks)} chunks "
+        f"(max_chars={max_chars})"
     )
 
     work_dir = os.path.dirname(output_path) or "."
@@ -131,10 +255,13 @@ async def generate_speech_chunked(
 
     try:
         for i, chunk in enumerate(chunks):
-            audio_data = await generate_speech(chunk, voice, speed)
+            if provider == "xtts":
+                audio_data = await generate_speech_xtts(chunk, voice, speed)
+            else:
+                audio_data = await generate_speech(chunk, voice, speed)
             if not audio_data or len(audio_data) < 100:
                 raise RuntimeError(
-                    f"Kokoro returned empty audio for chunk {i + 1}/{len(chunks)} "
+                    f"{provider} returned empty audio for chunk {i + 1}/{len(chunks)} "
                     f"({len(audio_data) if audio_data else 0} bytes)"
                 )
             chunk_path = os.path.join(work_dir, f"_tts_chunk_{run_id}_{i}.mp3")

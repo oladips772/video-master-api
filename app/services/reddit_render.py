@@ -23,7 +23,11 @@ from typing import Any, Dict, Optional
 
 import aiohttp
 
-from app.services.audio.text_to_speech import generate_speech, generate_speech_chunked
+from app.services.audio.text_to_speech import (
+    generate_speech,
+    generate_speech_chunked,
+    generate_speech_xtts,
+)
 from app.services.backgrounds import resolve_background
 from app.utils.captions import create_srt_from_word_timestamps, create_srt_from_text
 from app.utils.media import download_media_file
@@ -195,11 +199,18 @@ class RedditRenderService:
 
     async def _generate_tts(self, job: RedditRenderJob) -> str:
         text = job.params["script"]
-        voice = job.params.get("voice_id", "af_heart")
+        provider = (job.params.get("voice_provider") or "xtts").lower()
+        if provider == "xtts":
+            voice = job.params.get("speaker") or "Claribel Daws"
+        else:
+            voice = job.params.get("voice_id", "af_heart")
         speed = float(job.params.get("voice_speed", 1.0))
         max_attempts = int(os.environ.get("KOKORO_MAX_RETRIES", "3"))
 
-        logger.info(f"[reddit:{job.job_id}] TTS voice={voice} speed={speed} chars={len(text)}")
+        logger.info(
+            f"[reddit:{job.job_id}] TTS provider={provider} voice={voice} "
+            f"speed={speed} chars={len(text)}"
+        )
 
         path = os.path.join(job.temp_dir, "narration.mp3")
         use_chunked = len(text) > 400
@@ -209,17 +220,22 @@ class RedditRenderService:
             try:
                 async with self._tts_semaphore:
                     if use_chunked:
-                        await generate_speech_chunked(text, voice, speed, path)
+                        await generate_speech_chunked(
+                            text, voice, speed, path, provider=provider
+                        )
                         size = os.path.getsize(path) if os.path.exists(path) else 0
                         if size < 100:
                             raise RuntimeError(
                                 f"Chunked TTS produced empty/invalid audio ({size} bytes)"
                             )
                     else:
-                        audio_data = await generate_speech(text, voice, speed)
+                        if provider == "xtts":
+                            audio_data = await generate_speech_xtts(text, voice, speed)
+                        else:
+                            audio_data = await generate_speech(text, voice, speed)
                         if not audio_data or len(audio_data) < 100:
                             raise RuntimeError(
-                                f"Kokoro returned empty/invalid audio "
+                                f"{provider} returned empty/invalid audio "
                                 f"({len(audio_data) if audio_data else 0} bytes)"
                             )
                         with open(path, "wb") as f:

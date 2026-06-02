@@ -1,12 +1,44 @@
 """
-Routes for text to speech conversion using Kokoro TTS.
+Routes for text to speech conversion using Kokoro TTS and XTTS-v2.
 """
+import logging
+
 from fastapi import APIRouter, HTTPException, Depends, Query
 from app.models import TextToSpeechRequest, JobResponse, JobStatusResponse
 from app.services.job_queue import job_queue
-from app.services.audio.text_to_speech import process_text_to_speech
+from app.services.audio.text_to_speech import (
+    XTTS_DEFAULT_SPEAKER,
+    get_xtts_voices,
+    process_text_to_speech,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/audio", tags=["audio"])
+tts_router = APIRouter(prefix="/v1/tts", tags=["audio"])
+
+
+@tts_router.get("/speakers")
+async def list_xtts_speakers():
+    """
+    List the XTTS-v2 speaker names available on the configured XTTS server.
+
+    Returns:
+        JSON with `provider`, `default`, and `speakers` (list of names).
+    """
+    try:
+        speakers = await get_xtts_voices()
+    except ValueError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        logger.exception("Failed to fetch XTTS speakers")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch XTTS speakers: {e}")
+
+    return {
+        "provider": "xtts",
+        "default": XTTS_DEFAULT_SPEAKER,
+        "speakers": speakers,
+    }
 
 
 @router.post("/text-to-speech", response_model=JobResponse)
