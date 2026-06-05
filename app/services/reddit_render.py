@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 TEMP_BASE_DIR = os.environ.get("RENDER_TEMP_DIR", "/tmp/media-master")
 
+# Base directory user-supplied speaker_wav paths are resolved against. Matches
+# the container's WORKDIR so a request value of "speakers/my_voice.wav" lands
+# on the volume mounted at /app/speakers.
+SPEAKER_WAV_BASE_DIR = os.environ.get("SPEAKER_WAV_BASE_DIR", "/app")
+
 # Aspect → (width, height) for the output video
 ASPECT_DIMENSIONS = {
     "9:16": (1080, 1920),
@@ -207,9 +212,23 @@ class RedditRenderService:
         speed = float(job.params.get("voice_speed", 1.0))
         max_attempts = int(os.environ.get("KOKORO_MAX_RETRIES", "3"))
 
+        # Voice cloning: resolve and validate speaker_wav before any retry loop.
+        # Only applies to xtts; ignored for kokoro.
+        speaker_wav_path: Optional[str] = None
+        speaker_wav_param = job.params.get("speaker_wav")
+        if speaker_wav_param and provider == "xtts":
+            speaker_wav_path = os.path.join(SPEAKER_WAV_BASE_DIR, speaker_wav_param)
+            if not os.path.isfile(speaker_wav_path):
+                raise FileNotFoundError(
+                    f"speaker_wav file not found: '{speaker_wav_param}' "
+                    f"(resolved to '{speaker_wav_path}'). Drop the WAV into "
+                    f"the speakers/ folder mounted on the api container."
+                )
+
         logger.info(
             f"[reddit:{job.job_id}] TTS provider={provider} voice={voice} "
-            f"speed={speed} chars={len(text)}"
+            f"speed={speed} chars={len(text)} "
+            f"speaker_wav={speaker_wav_path or '-'}"
         )
 
         path = os.path.join(job.temp_dir, "narration.mp3")
@@ -221,7 +240,9 @@ class RedditRenderService:
                 async with self._tts_semaphore:
                     if use_chunked:
                         await generate_speech_chunked(
-                            text, voice, speed, path, provider=provider
+                            text, voice, speed, path,
+                            provider=provider,
+                            speaker_wav=speaker_wav_path,
                         )
                         size = os.path.getsize(path) if os.path.exists(path) else 0
                         if size < 100:
@@ -230,7 +251,9 @@ class RedditRenderService:
                             )
                     else:
                         if provider == "xtts":
-                            audio_data = await generate_speech_xtts(text, voice, speed)
+                            audio_data = await generate_speech_xtts(
+                                text, voice, speed, speaker_wav=speaker_wav_path
+                            )
                         else:
                             audio_data = await generate_speech(text, voice, speed)
                         if not audio_data or len(audio_data) < 100:

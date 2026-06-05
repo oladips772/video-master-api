@@ -10,7 +10,7 @@ import json
 import subprocess
 import tempfile
 import aiohttp
-from typing import List
+from typing import List, Optional
 from app.utils.storage import storage_manager
 
 # Configure logging
@@ -88,6 +88,7 @@ async def generate_speech_xtts(
     text: str,
     voice: str = XTTS_DEFAULT_SPEAKER,
     speed: float = 1.0,
+    speaker_wav: Optional[str] = None,
 ) -> bytes:
     """
     Generate speech from text using the XTTS-v2 (Coqui) REST API.
@@ -99,21 +100,41 @@ async def generate_speech_xtts(
         speed: Speech speed multiplier. XTTS-v2 has no native speed param, so
             speeds != 1.0 are applied via FFmpeg's atempo filter during the
             wav→mp3 conversion.
+        speaker_wav: Optional absolute path to a WAV file used for voice
+            cloning. When provided, the request is sent to /api/tts_to_file as
+            multipart form data (text + speaker_wav file + language), and the
+            ``voice`` argument is ignored.
 
     Returns:
         MP3-encoded audio bytes.
     """
     speaker = voice or XTTS_DEFAULT_SPEAKER
 
-    form = {
-        "text": text,
-        "speaker_id": speaker,
-        "language": XTTS_DEFAULT_LANGUAGE,
-        "style_wav": "",
-    }
-
-    url = f"{XTTS_API_URL}/api/tts"
-    logger.info(f"Calling XTTS speaker={speaker} chars={len(text)} url={url}")
+    if speaker_wav:
+        url = f"{XTTS_API_URL}/api/tts_to_file"
+        logger.info(
+            f"Calling XTTS clone speaker_wav={speaker_wav} chars={len(text)} url={url}"
+        )
+        with open(speaker_wav, "rb") as f:
+            wav_bytes = f.read()
+        form = aiohttp.FormData()
+        form.add_field("text", text)
+        form.add_field("language", XTTS_DEFAULT_LANGUAGE)
+        form.add_field(
+            "speaker_wav",
+            wav_bytes,
+            filename=os.path.basename(speaker_wav),
+            content_type="audio/wav",
+        )
+    else:
+        url = f"{XTTS_API_URL}/api/tts"
+        logger.info(f"Calling XTTS speaker={speaker} chars={len(text)} url={url}")
+        form = {
+            "text": text,
+            "speaker_id": speaker,
+            "language": XTTS_DEFAULT_LANGUAGE,
+            "style_wav": "",
+        }
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -222,6 +243,7 @@ async def generate_speech_chunked(
     output_path: str,
     max_chars: int = 400,
     provider: str = "xtts",
+    speaker_wav: Optional[str] = None,
 ) -> str:
     """Split text into sentence-aware chunks, TTS each, concatenate to output_path with FFmpeg.
 
@@ -229,6 +251,8 @@ async def generate_speech_chunked(
         provider: Which TTS backend to use per chunk. "xtts" (default) routes
             through ``generate_speech_xtts``; "kokoro" routes through the
             existing ``generate_speech`` Kokoro path.
+        speaker_wav: Optional path to a WAV file for XTTS voice cloning. Only
+            used when ``provider="xtts"``; ignored for Kokoro.
     """
     if not output_path:
         raise ValueError("output_path is required for generate_speech_chunked")
@@ -256,7 +280,9 @@ async def generate_speech_chunked(
     try:
         for i, chunk in enumerate(chunks):
             if provider == "xtts":
-                audio_data = await generate_speech_xtts(chunk, voice, speed)
+                audio_data = await generate_speech_xtts(
+                    chunk, voice, speed, speaker_wav=speaker_wav
+                )
             else:
                 audio_data = await generate_speech(chunk, voice, speed)
             if not audio_data or len(audio_data) < 100:

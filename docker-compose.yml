@@ -50,6 +50,8 @@ services:
       - KOKORO_MAX_TEXT_LENGTH=1000
       - XTTS_API_URL=${XTTS_API_URL:-http://xtts:5002}
       - XTTS_TIMEOUT=${XTTS_TIMEOUT:-120}
+    volumes:
+      - /root/video-master-api/speakers:/app/speakers:ro
     depends_on:
       - minio
       - kokoro-tts

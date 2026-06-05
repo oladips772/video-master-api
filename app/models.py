@@ -998,6 +998,14 @@ class RedditRenderRequest(BaseModel):
         default="Claribel Daws",
         description="XTTS-v2 speaker name (used when voice_provider='xtts'). See GET /v1/tts/speakers."
     )
+    speaker_wav: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to a WAV file for XTTS voice cloning, relative to the API working directory "
+            "(e.g. 'speakers/my_voice.wav'). When provided and voice_provider='xtts', overrides "
+            "the 'speaker' field and clones the voice from the WAV via /api/tts_to_file."
+        ),
+    )
     voice_id: str = Field(
         default="af_heart",
         description="Kokoro voice ID (used when voice_provider='kokoro'). e.g. 'af_heart', 'am_adam'."
