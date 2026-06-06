@@ -101,7 +101,7 @@ async def generate_speech_xtts(
             speeds != 1.0 are applied via FFmpeg's atempo filter during the
             wav→mp3 conversion.
         speaker_wav: Optional absolute path to a WAV file used for voice
-            cloning. When provided, the request is sent to /api/tts_to_file as
+            cloning. When provided, the request is sent to /tts_to_file as
             multipart form data (text + speaker_wav file + language), and the
             ``voice`` argument is ignored.
 
@@ -111,7 +111,7 @@ async def generate_speech_xtts(
     speaker = voice or XTTS_DEFAULT_SPEAKER
 
     if speaker_wav:
-        url = f"{XTTS_API_URL}/api/tts_to_file"
+        url = f"{XTTS_API_URL}/tts_to_file"
         logger.info(
             f"Calling XTTS clone speaker_wav={speaker_wav} chars={len(text)} url={url}"
         )
@@ -127,13 +127,12 @@ async def generate_speech_xtts(
             content_type="audio/wav",
         )
     else:
-        url = f"{XTTS_API_URL}/api/tts"
+        url = f"{XTTS_API_URL}/tts_to_audio/"
         logger.info(f"Calling XTTS speaker={speaker} chars={len(text)} url={url}")
         form = {
             "text": text,
-            "speaker_id": speaker,
+            "speaker_name": speaker,
             "language": XTTS_DEFAULT_LANGUAGE,
-            "style_wav": "",
         }
 
     try:
@@ -183,7 +182,7 @@ async def generate_speech_xtts(
 
 async def get_xtts_voices() -> List[str]:
     """Return the list of available XTTS-v2 speaker names from the server."""
-    url = f"{XTTS_API_URL}/api/speakers"
+    url = f"{XTTS_API_URL}/speakers_list"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
