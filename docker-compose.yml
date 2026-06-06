@@ -24,14 +24,14 @@ services:
     restart: unless-stopped
 
   xtts:
-    image: ghcr.io/coqui-ai/tts-cpu:latest
+    image: daswer123/xtts-api-server:latest
     container_name: xtts-service-v2
     ports:
-      - "5002:5002"
-    command: >
-      python TTS/server/server.py
-      --model_name tts_models/multilingual/multi-dataset/xtts_v2
-      --use_cuda false
+      - "5002:8020"
+    environment:
+      - COQUI_TOS_AGREED=1
+    volumes:
+      - xtts_models:/app/models
     restart: unless-stopped
 
   api:
@@ -48,7 +48,7 @@ services:
       - S3_REGION=${S3_REGION}
       - KOKORO_TIMEOUT=120
       - KOKORO_MAX_TEXT_LENGTH=1000
-      - XTTS_API_URL=${XTTS_API_URL:-http://xtts:5002}
+      - XTTS_API_URL=${XTTS_API_URL:-http://xtts:8020}
       - XTTS_TIMEOUT=${XTTS_TIMEOUT:-120}
     volumes:
       - /root/video-master-api/speakers:/app/speakers:ro
@@ -60,6 +60,7 @@ services:
 
 volumes:
   minio_data:
+  xtts_models:
 
 networks:
   default:
