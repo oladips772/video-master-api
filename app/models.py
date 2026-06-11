@@ -865,8 +865,13 @@ class RenderScene(BaseModel):
         ge=1,
         description="Scene number (1-indexed, used for ordering)"
     )
-    image_prompt: str = Field(
-        description="Prompt for AI image generation (Kie.ai Flux-2 Pro)"
+    image_prompt: Optional[str] = Field(
+        default=None,
+        description="Prompt for AI image generation. Used when image_url is not provided."
+    )
+    image_url: Optional[AnyUrl] = Field(
+        default=None,
+        description="Direct URL of an image to use for this scene. When set, the image is downloaded instead of generated and image_prompt is ignored."
     )
     narration_text: str = Field(
         description="Text to convert to voiceover speech (Kokoro TTS)"

@@ -34,6 +34,32 @@ import aiohttp
 # Configure logging
 logger = logging.getLogger(__name__)
 
+
+# Fallback Ken Burns keypoints used when a scene supplies ken_burns_keypoints=[]
+# (an empty array signals "pick sensible defaults based on pan_direction").
+DEFAULT_KEN_BURNS_KEYPOINTS = {
+    "zoom_in": [
+        {"time": 0.0, "x": 0.5, "y": 0.5, "zoom": 1.0},
+        {"time": 1.0, "x": 0.5, "y": 0.5, "zoom": 1.5},
+    ],
+    "zoom_out": [
+        {"time": 0.0, "x": 0.5, "y": 0.5, "zoom": 1.5},
+        {"time": 1.0, "x": 0.5, "y": 0.5, "zoom": 1.0},
+    ],
+    "left": [
+        {"time": 0.0, "x": 0.8, "y": 0.5, "zoom": 1.2},
+        {"time": 1.0, "x": 0.2, "y": 0.5, "zoom": 1.2},
+    ],
+    "right": [
+        {"time": 0.0, "x": 0.2, "y": 0.5, "zoom": 1.2},
+        {"time": 1.0, "x": 0.8, "y": 0.5, "zoom": 1.2},
+    ],
+    "static": [
+        {"time": 0.0, "x": 0.5, "y": 0.5, "zoom": 1.0},
+        {"time": 1.0, "x": 0.5, "y": 0.5, "zoom": 1.0},
+    ],
+}
+
 # Configuration
 BATCH_SIZE = int(os.environ.get("KIE_AI_CONCURRENCY", "5"))  # Process scenes in batches
 TEMP_BASE_DIR = os.environ.get("RENDER_TEMP_DIR", "/tmp/media-master")
@@ -300,12 +326,31 @@ class RenderService:
             job.failed_scenes += 1
     
     async def _generate_image_for_scene(self, job: RenderJob, scene: Dict[str, Any]) -> bytes:
-        """Generate image using the provider specified in settings (default: Cloudflare Worker)."""
+        """Obtain image bytes for a scene: download from image_url if provided, else generate."""
         settings = job.render_params.get("settings", {})
         aspect_ratio = settings.get("aspect_ratio", "16:9")
         image_provider = settings.get("image_provider", "cloudflare")
         prompt = scene.get("image_prompt")
+        image_url = scene.get("image_url")
         scene_num = scene.get("scene_number")
+
+        if image_url:
+            image_url = str(image_url)
+            logger.info(f"Downloading image for scene {scene_num} from {image_url}")
+            try:
+                timeout = aiohttp.ClientTimeout(total=60)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(image_url) as resp:
+                        resp.raise_for_status()
+                        image_data = await resp.read()
+            except Exception as e:
+                raise RuntimeError(f"Failed to download image for scene {scene_num} from {image_url}: {e}")
+
+            temp_image_path = os.path.join(job.temp_dir, f"scene_{scene_num}_image.jpg")
+            with open(temp_image_path, "wb") as f:
+                f.write(image_data)
+            logger.info(f"Image saved to {temp_image_path}")
+            return image_data
 
         logger.info(
             f"Generating image for scene {scene_num} via {image_provider}: {prompt[:100]}..."
@@ -416,17 +461,22 @@ class RenderService:
         """Generate Ken Burns video from image."""
         scene_num = scene.get("scene_number")
         settings = job.render_params.get("settings", {})
-        
+
         logger.info(f"Generating Ken Burns video for scene {scene_num} with duration {duration:.2f}s")
-        
+
         # Save image temporarily
         temp_image_path = os.path.join(job.temp_dir, f"scene_{scene_num}_image.jpg")
         with open(temp_image_path, "wb") as f:
             f.write(image_data)
-        
+
         try:
             # Get image dimensions for video generation
             image_result = await process_image(temp_image_path)
+
+            pan_direction = scene.get("pan_direction", "right")
+            keypoints = scene.get("ken_burns_keypoints")
+            if isinstance(keypoints, list) and len(keypoints) == 0:
+                keypoints = DEFAULT_KEN_BURNS_KEYPOINTS.get(pan_direction)
 
             # Generate Ken Burns video as a local file (no S3 upload)
             video_path = await create_video_with_effects(
@@ -437,8 +487,8 @@ class RenderService:
                 output_dims=image_result["output_dims"],
                 scale_dims=image_result["scale_dims"],
                 effect_type="ken_burns",
-                pan_direction=scene.get("pan_direction", "right"),
-                ken_burns_keypoints=scene.get("ken_burns_keypoints")
+                pan_direction=pan_direction,
+                ken_burns_keypoints=keypoints
             )
 
             logger.info(f"Ken Burns video generated: {video_path}")

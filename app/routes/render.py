@@ -109,10 +109,10 @@ async def start_render_job(request: RenderRequest):
         
         # Validate scenes have required fields
         for i, scene in enumerate(request.scenes, 1):
-            if not scene.image_prompt:
+            if not scene.image_prompt and not scene.image_url:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Scene {i} missing required field: image_prompt"
+                    detail=f"Scene {i} must provide either image_prompt or image_url"
                 )
             if not scene.narration_text:
                 raise HTTPException(
