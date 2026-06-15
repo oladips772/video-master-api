@@ -387,12 +387,14 @@ class RenderService:
     async def _generate_voiceover_for_scene(self, job: RenderJob, scene: Dict[str, Any]) -> str:
         """Generate voiceover using Kokoro TTS with retry logic."""
         text = scene.get("narration_text")
-        voice_id = scene.get("voice_id", "af_heart")
+        payload = job.render_params
+        # Fallback chain: scene-level voice_id → top-level payload voice_id → default
+        voice_id = scene.get("voice_id") or payload.get("voice_id") or "af_heart"
         scene_num = scene.get("scene_number")
         max_attempts = int(os.environ.get("KOKORO_MAX_RETRIES", "3"))
 
         # Scene-level speed overrides the global settings speed
-        settings = job.render_params.get("settings", {})
+        settings = payload.get("settings", {})
         speed = scene.get("voice_speed") or settings.get("voice_speed", 1.0)
         speed = float(speed)
 

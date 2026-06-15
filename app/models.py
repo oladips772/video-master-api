@@ -920,6 +920,10 @@ class RenderRequest(BaseModel):
         default=None,
         description="Optional webhook URL to POST status updates to when rendering completes"
     )
+    voice_id: Optional[str] = Field(
+        default=None,
+        description="Top-level voice ID used as a fallback when a scene omits voice_id. Scene-level voice_id still wins."
+    )
     settings: RenderSettings = Field(
         description="Global settings for all scenes"
     )
