@@ -17,5 +17,4 @@ jobs:
             cd /root/video-master-api
             git pull origin main
             docker compose build api
-            docker compose up -d --no-recreate
-            docker compose restart api
+            docker compose up -d api
