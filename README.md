@@ -1,13 +1,18 @@
+<!-- @format -->
+
 # Media Master API
 
-A powerful API for generating media content. This project provides asynchronous operations for various media transformations, built with FastAPI and Docker.
+A powerful API for generating media content. This project provides asynchronous
+operations for various media transformations, built with FastAPI and Docker.
 
+## Why use this API?.
 
-## Why use this API?
+1. It saves your time and money by using our API to generate long-form videos,
+   audio and more, with few simple API calls you can generate high-quality media
+   content.
 
-1. It saves your time and money by using our API to generate long-form videos, audio and more, with few simple API calls you can generate high-quality media content.
-
-2. Replace expensive services like JSON2Video, Creatomate, Eleven Labs etc. with this API to generate high-quality media content.
+2. Replace expensive services like JSON2Video, Creatomate, Eleven Labs etc. with
+   this API to generate high-quality media content.
 
 ## Features
 
@@ -21,7 +26,8 @@ A powerful API for generating media content. This project provides asynchronous 
 ## Prerequisites
 
 - S3 account and credentials
-- Docker Desktop installed, you can install it from here: https://www.docker.com/products/docker-desktop/
+- Docker Desktop installed, you can install it from here:
+  https://www.docker.com/products/docker-desktop/
 
 ## Installation
 
@@ -62,14 +68,14 @@ MINIO_ROOT_PASSWORD=12345678
 docker-compose up --build
 ```
 
-
 ## API Documentation
 
 Interactive API documentation is available at http://localhost:8000/docs
 
 ### Comprehensive Documentation
 
-For detailed API documentation, we've created a comprehensive documentation set in the [docs](./docs) directory:
+For detailed API documentation, we've created a comprehensive documentation set
+in the [docs](./docs) directory:
 
 - **[API Overview](./docs/README.md)**: Complete overview of all API endpoints
 - **Image Processing**:
@@ -151,11 +157,15 @@ Response (when completed):
 
 The image-to-video endpoint supports sophisticated audio mixing:
 
-- **Dual Audio Sources**: Combine narrator audio (from TTS or direct file) with background music
+- **Dual Audio Sources**: Combine narrator audio (from TTS or direct file) with
+  background music
 - **YouTube Support**: Use YouTube URLs directly as background music sources
-- **Volume Control**: Adjust volume levels independently for narrator and background music
-- **Format Compatibility**: Automatic handling of different audio formats and sample rates
-- **Fallback Mechanisms**: Multiple mixing methods ensure reliable audio processing
+- **Volume Control**: Adjust volume levels independently for narrator and
+  background music
+- **Format Compatibility**: Automatic handling of different audio formats and
+  sample rates
+- **Fallback Mechanisms**: Multiple mixing methods ensure reliable audio
+processing
 </details>
 
 <details>
@@ -226,10 +236,13 @@ Response (when completed):
 The image overlay endpoint provides advanced image composition capabilities:
 
 - **Multiple Overlays**: Add any number of images on top of a base image
-- **Precise Positioning**: Position overlays using normalized coordinates (0.0 to 1.0)
-- **Sizing Control**: Maintain aspect ratios or set specific dimensions relative to the base image
+- **Precise Positioning**: Position overlays using normalized coordinates (0.0
+  to 1.0)
+- **Sizing Control**: Maintain aspect ratios or set specific dimensions relative
+  to the base image
 - **Visual Effects**: Apply rotation and opacity to overlays
-- **Layering Control**: Use z-index to control which overlays appear on top of others
+- **Layering Control**: Use z-index to control which overlays appear on top of
+  others
 - **Format Options**: Output in PNG, JPEG, or WebP with quality control
 </details>
 
@@ -247,16 +260,17 @@ Convert text to speech using Kokoro TTS via an external service:
 }
 ```
 
-The `model` parameter is optional and defaults to "af_alloy". Available models include: "
-                    "af_alloy, af_aoede, af_bella, af_heart, af_jadzia, af_jessica, af_kore, "
-                    "af_nicole, af_nova, af_river, af_sarah, af_sky, af_v0, af_v0bella, af_v0irulan, "
-                    "af_v0nicole, af_v0sarah, af_v0sky, am_adam, am_echo, am_eric, am_fenrir, am_liam, "
-                    "am_michael, am_onyx, am_puck, am_santa, am_v0adam, am_v0gurney, am_v0michael, "
-                    "bf_alice, bf_emma, bf_lily, bf_v0emma, bf_v0isabella, bm_daniel, bm_fable, "
-                    "bm_george, bm_lewis, bm_v0george, bm_v0lewis, ef_dora, em_alex, em_santa, ff_siwis, "
-                    "hf_alpha, hf_beta, hm_omega, hm_psi, if_sara, im_nicola, jf_alpha, jf_gongitsune, "
-                    "jf_nezumi, jf_tebukuro, jm_kumo, pf_dora, pm_alex, pm_santa, zf_xiaobei, zf_xiaoni, "
-                    "zf_xiaoxiao, zf_xiaoyi, zm_yunjian, zm_yunxi, zm_yunxia, zm_yunyang"
+The `model` parameter is optional and defaults to "af_alloy". Available models
+include: " "af_alloy, af_aoede, af_bella, af_heart, af_jadzia, af_jessica,
+af_kore, " "af_nicole, af_nova, af_river, af_sarah, af_sky, af_v0, af_v0bella,
+af_v0irulan, " "af_v0nicole, af_v0sarah, af_v0sky, am_adam, am_echo, am_eric,
+am_fenrir, am_liam, " "am_michael, am_onyx, am_puck, am_santa, am_v0adam,
+am_v0gurney, am_v0michael, " "bf_alice, bf_emma, bf_lily, bf_v0emma,
+bf_v0isabella, bm_daniel, bm_fable, " "bm_george, bm_lewis, bm_v0george,
+bm_v0lewis, ef_dora, em_alex, em_santa, ff_siwis, " "hf_alpha, hf_beta,
+hm_omega, hm_psi, if_sara, im_nicola, jf_alpha, jf_gongitsune, " "jf_nezumi,
+jf_tebukuro, jm_kumo, pf_dora, pm_alex, pm_santa, zf_xiaobei, zf_xiaoni, "
+"zf_xiaoxiao, zf_xiaoyi, zm_yunjian, zm_yunxi, zm_yunxia, zm_yunyang"
 
 Response:
 
@@ -280,7 +294,8 @@ Response (when completed):
   },
   "error": null
 }
-``` 
+```
+
 </details>
 
 <details>
@@ -345,6 +360,7 @@ Response (when completed):
   "error": null
 }
 ```
+
 </details>
 
 <details>
@@ -356,7 +372,10 @@ Concatenate multiple videos:
 
 ```json
 {
-  "video_urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"]
+  "video_urls": [
+    "https://example.com/video1.mp4",
+    "https://example.com/video2.mp4"
+  ]
 }
 ```
 
@@ -382,6 +401,7 @@ Response (when completed):
   "error": null
 }
 ```
+
 </details>
 
 <details>
@@ -425,6 +445,7 @@ Response (when completed):
   "error": null
 }
 ```
+
 </details>
 
 ### Video Overlay on Image
@@ -483,9 +504,10 @@ curl -X GET "http://localhost:8000/v1/image/add-video-overlay/video-overlay-1234
 ### Video Overlay Features
 
 - **Multiple Video Overlays**: Layer multiple videos with precise timing control
-- **Flexible Positioning**: Position overlays anywhere on the base image using relative coordinates
+- **Flexible Positioning**: Position overlays anywhere on the base image using
+  relative coordinates
 - **Visual Effects**: Control opacity, rotation, and layering with z-index
 - **Audio Mixing**: Combine overlay video audio with background music
 - **Timing Control**: Set start/end times for each overlay with looping support
-- **Dynamic Compositions**: Create picture-in-picture effects and animated watermarks
-
+- **Dynamic Compositions**: Create picture-in-picture effects and animated
+  watermarks
