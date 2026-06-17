@@ -393,9 +393,13 @@ class RenderService:
         scene_num = scene.get("scene_number")
         max_attempts = int(os.environ.get("KOKORO_MAX_RETRIES", "3"))
 
-        # Scene-level speed overrides the global settings speed
+        # Fallback chain: scene-level → top-level payload → settings.voice_speed → 1.0
         settings = payload.get("settings", {})
-        speed = scene.get("voice_speed") or settings.get("voice_speed", 1.0)
+        speed = (
+            scene.get("voice_speed")
+            or payload.get("voice_speed")
+            or settings.get("voice_speed", 1.0)
+        )
         speed = float(speed)
 
         logger.info(f"Generating voiceover for scene {scene_num} with voice {voice_id}, speed {speed}")

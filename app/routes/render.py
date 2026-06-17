@@ -129,6 +129,7 @@ async def start_render_job(request: RenderRequest):
             "channel": request.channel,
             "webhook_url": request.webhook_url,
             "voice_id": request.voice_id,
+            "voice_speed": request.voice_speed,
             "settings": request.settings.dict(exclude_none=True),
             "scenes": [scene.dict(exclude_none=True) for scene in request.scenes]
         }

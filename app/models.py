@@ -924,6 +924,12 @@ class RenderRequest(BaseModel):
         default=None,
         description="Top-level voice ID used as a fallback when a scene omits voice_id. Scene-level voice_id still wins."
     )
+    voice_speed: Optional[float] = Field(
+        default=None,
+        ge=0.5,
+        le=2.0,
+        description="Top-level voice speed used as a fallback when a scene omits voice_speed. Scene-level voice_speed still wins; falls through to settings.voice_speed if not set here."
+    )
     settings: RenderSettings = Field(
         description="Global settings for all scenes"
     )
