@@ -65,6 +65,15 @@ BATCH_SIZE = int(os.environ.get("KIE_AI_CONCURRENCY", "5"))  # Process scenes in
 TEMP_BASE_DIR = os.environ.get("RENDER_TEMP_DIR", "/tmp/media-master")
 
 
+def _audio_gain_for_aspect_ratio(aspect_ratio: Optional[str]) -> float:
+    """Boost factor applied to both voice and background music for given aspect ratio.
+
+    Long-form 16:9 renders sound quieter than 9:16 shorts at the same input levels,
+    so we lift both by 1.5x. Other ratios pass through at 1.0x.
+    """
+    return 1.5 if aspect_ratio == "16:9" else 1.0
+
+
 class RenderJob:
     """Tracks state of a multi-scene render job."""
     
@@ -603,8 +612,11 @@ class RenderService:
         """Assemble scene: combine video + audio, optionally burning in animated captions."""
         settings = job.render_params.get("settings", {})
         captions_enabled = settings.get("captions_enabled", False)
+        voice_gain = _audio_gain_for_aspect_ratio(settings.get("aspect_ratio"))
 
-        logger.info(f"Assembling scene {scene_num} (captions_enabled={captions_enabled})")
+        logger.info(
+            f"Assembling scene {scene_num} (captions_enabled={captions_enabled}, voice_gain={voice_gain})"
+        )
 
         try:
             output_path = os.path.join(job.temp_dir, f"scene_{scene_num}_assembled.mp4")
@@ -629,6 +641,7 @@ class RenderService:
                         "-i", audio_path,
                         "-c:v", "copy",
                         "-c:a", "aac",
+                        "-af", f"volume={voice_gain}",
                         "-shortest",
                         combined_path,
                     ]
@@ -679,6 +692,7 @@ class RenderService:
                 "-i", audio_path,
                 "-c:v", "copy",
                 "-c:a", "aac",
+                "-af", f"volume={voice_gain}",
                 "-shortest",
                 output_path,
             ]
@@ -773,7 +787,13 @@ class RenderService:
     async def _add_background_music(self, job: RenderJob, video_path: str, bg_music_url: str, volume: float) -> str:
         """Add background music to final video."""
         try:
-            logger.info(f"Downloading background music from {bg_music_url}")
+            settings = job.render_params.get("settings", {})
+            bg_gain = _audio_gain_for_aspect_ratio(settings.get("aspect_ratio"))
+            effective_volume = volume * bg_gain
+            logger.info(
+                f"Downloading background music from {bg_music_url} "
+                f"(volume={volume}, bg_gain={bg_gain}, effective={effective_volume})"
+            )
             # download_media_file(url, temp_dir) → returns (local_path, extension)
             bg_audio_path, _ = await download_media_file(bg_music_url, job.temp_dir)
             
@@ -833,7 +853,7 @@ class RenderService:
             output_path = os.path.join(job.temp_dir, "final_with_music.mp4")
             
             # Complex filter to mix audio tracks with proper volume
-            filter_complex = f"[1:a]volume={volume}[bg];[0:a]volume=1[voice];[voice][bg]amix=inputs=2:duration=longest[a]"
+            filter_complex = f"[1:a]volume={effective_volume}[bg];[0:a]volume=1[voice];[voice][bg]amix=inputs=2:duration=longest[a]"
             
             cmd = [
                 "ffmpeg",
