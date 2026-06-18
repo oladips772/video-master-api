@@ -876,9 +876,9 @@ class RenderScene(BaseModel):
     narration_text: str = Field(
         description="Text to convert to voiceover speech (Kokoro TTS)"
     )
-    voice_id: str = Field(
-        default="af_heart",
-        description="Kokoro voice ID (e.g., 'af_heart', 'am_adam', 'af_bella', etc.)"
+    voice_id: Optional[str] = Field(
+        default=None,
+        description="Kokoro voice ID for this scene (e.g., 'af_heart', 'am_adam'). When omitted, falls back to the top-level payload voice_id, then 'af_heart'."
     )
     voice_speed: Optional[float] = Field(
         default=None,
