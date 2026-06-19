@@ -69,9 +69,9 @@ def _audio_gain_for_aspect_ratio(aspect_ratio: Optional[str]) -> float:
     """Boost factor applied to both voice and background music for given aspect ratio.
 
     Long-form 16:9 renders sound quieter than 9:16 shorts at the same input levels,
-    so we lift both by 1.5x. Other ratios pass through at 1.0x.
+    so we lift both by 4.0x (~+12 dB). Other ratios pass through at 1.0x.
     """
-    return 1.5 if aspect_ratio == "16:9" else 1.0
+    return 4.0 if aspect_ratio == "16:9" else 1.0
 
 
 class RenderJob:
