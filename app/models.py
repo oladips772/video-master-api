@@ -20,6 +20,7 @@ class JobType(str, Enum):
     VIDEO_ADD_AUDIO = "video_add_audio"
     VIDEO_ADD_CAPTIONS = "video_add_captions"
     RENDER_MULTI_SCENE = "render_multi_scene"
+    RECAP = "recap"
 
 
 class Job(BaseModel):

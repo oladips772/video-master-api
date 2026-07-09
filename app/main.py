@@ -43,6 +43,7 @@ from app.routes.media.transcription import router as media_transcription_router
 from app.routes.video import router as video_router
 from app.routes.render import router as render_router
 from app.routes.reddit_render import router as reddit_render_router
+from app.routes.recap import router as recap_router
 
 # Create application
 app = FastAPI(
@@ -101,6 +102,7 @@ app.include_router(media_transcription_router, dependencies=[Depends(get_api_key
 app.include_router(video_router, prefix="/v1/video", dependencies=[Depends(get_api_key)])
 app.include_router(render_router, dependencies=[Depends(get_api_key)])
 app.include_router(reddit_render_router, dependencies=[Depends(get_api_key)])
+app.include_router(recap_router, dependencies=[Depends(get_api_key)])
 
 # Add API key information to the root endpoint
 @app.get("/")
@@ -148,6 +150,10 @@ async def read_root():
             "render_reddit": {
                 "create_job": "/v1/render/reddit",
                 "get_job_status": "/v1/render/reddit/{job_id}/status"
+            },
+            "recap": {
+                "create_job": "/recap/create",
+                "get_job_status": "/recap/{job_id}/status"
             }
         }
     }
