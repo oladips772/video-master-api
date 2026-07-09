@@ -19,6 +19,10 @@ RECAP_SCENE_SNAP = os.environ.get("RECAP_SCENE_SNAP", "0") == "1"
 # `nice` level for FFmpeg subprocesses so renders don't starve the API.
 RECAP_FFMPEG_NICE = int(os.environ.get("RECAP_FFMPEG_NICE", "10"))
 
+# Sent as X-Pipeline-Secret on status callbacks to Recap Studio when set
+# (must match Recap Studio's PIPELINE_SHARED_SECRET).
+PIPELINE_SHARED_SECRET = os.environ.get("PIPELINE_SHARED_SECRET", "")
+
 RESOLUTIONS = {
     "1K": (1920, 1080),
     "2K": (2560, 1440),

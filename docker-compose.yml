@@ -56,6 +56,7 @@ services:
       - RECAP_WHISPER_MODEL=${RECAP_WHISPER_MODEL:-medium}
       - RECAP_SCENE_SNAP=${RECAP_SCENE_SNAP:-0}
       - RECAP_FFMPEG_NICE=${RECAP_FFMPEG_NICE:-10}
+      - PIPELINE_SHARED_SECRET=${PIPELINE_SHARED_SECRET:-}
     volumes:
       - /root/video-master-api/speakers:/app/speakers:ro
     depends_on:

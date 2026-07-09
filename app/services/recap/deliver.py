@@ -13,6 +13,7 @@ from typing import Any, Dict, List
 
 import aiohttp
 
+from app.services.recap.config import PIPELINE_SHARED_SECRET
 from app.services.recap.utils import cleanup_scratch
 from app.utils.storage import storage_manager
 
@@ -33,9 +34,12 @@ def _segments_for_callback(segments: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 
 async def _post_callback(callback_url: str, body: Dict[str, Any]) -> None:
+    headers = {}
+    if PIPELINE_SHARED_SECRET:
+        headers["X-Pipeline-Secret"] = PIPELINE_SHARED_SECRET
     timeout = aiohttp.ClientTimeout(total=60)
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(callback_url, json=body) as resp:
+        async with session.post(callback_url, json=body, headers=headers) as resp:
             if resp.status >= 300:
                 text = await resp.text()
                 raise RuntimeError(f"callback returned {resp.status}: {text[:300]}")
