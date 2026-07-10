@@ -8,11 +8,18 @@ implementation — same order, same ctx handoff):
     resolve_subtitles → generate_script → extract_clips
         → generate_tts → assemble → upload_and_callback
 
+Manual-script mode (payload.script_mode == "manual" with payload.segments):
+skip subtitles + LLM script and replace with prepare_manual, which downloads
+the movie and adopts the provided segments directly:
+
+    prepare_manual → extract_clips → generate_tts → assemble → upload_and_callback
+
 Any step failure POSTs {status:"error", error:"<step>: <msg>"} to the Recap
 Studio callback and cleans the scratch dir before re-raising so the job is
 marked FAILED with the traceback.
 """
 import logging
+import os
 from typing import Any, Dict
 
 from app.services.recap.assemble import assemble
@@ -21,9 +28,67 @@ from app.services.recap.deliver import report_error, upload_and_callback
 from app.services.recap.script_gen import generate_script
 from app.services.recap.subtitles import resolve_subtitles
 from app.services.recap.tts import generate_tts
-from app.services.recap.utils import save_ctx
+from app.services.recap.utils import (
+    download_source,
+    media_duration,
+    save_ctx,
+    scratch_dir,
+)
 
 logger = logging.getLogger(__name__)
+
+
+async def prepare_manual(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Manual-mode substitute for resolve_subtitles + generate_script.
+
+    Downloads the movie (required for clip extraction), infers duration, and
+    adopts the caller-supplied segments and optional SEO block as the ctx the
+    downstream extract_clips → tts → assemble pipeline expects.
+    """
+    payload = ctx["payload"]
+    project_id = payload["project_id"]
+    scratch = scratch_dir(project_id)
+    source = payload["source"]
+
+    ext = os.path.splitext(source.get("movie_s3_key") or "movie.mkv")[1] or ".mkv"
+    movie = os.path.join(scratch, f"movie{ext}")
+    if not (os.path.exists(movie) and os.path.getsize(movie) > 0):
+        await download_source(source, "movie_url", "movie_s3_key", movie)
+
+    duration = source.get("duration_sec") or await media_duration(movie)
+    if not duration:
+        raise RuntimeError("prepare_manual: could not determine movie duration")
+
+    segments = [
+        {
+            "id": int(s.get("id") or (i + 1)),
+            "narration": str(s["narration"]).strip(),
+            "source_start": max(0.0, min(float(s["source_start"]), float(duration))),
+            "source_end": max(0.0, min(float(s["source_end"]), float(duration))),
+        }
+        for i, s in enumerate(payload["segments"])
+    ]
+    # Enforce ordering + minimum window; drop degenerates.
+    segments.sort(key=lambda s: (s["source_start"], s["source_end"]))
+    segments = [s for s in segments if s["source_end"] > s["source_start"]]
+
+    seo = dict(payload.get("seo") or {})
+    seo["title"] = (seo.get("title") or payload.get("title") or "")[:95]
+    seo["tags"] = (seo.get("tags") or [])[:20]
+
+    logger.info(
+        "[%s] manual mode: %d segments (%.0fs movie)",
+        project_id, len(segments), float(duration),
+    )
+    ctx.update(
+        movie_path=movie,
+        movie_duration_sec=float(duration),
+        segments=segments,
+        seo=seo,
+    )
+    save_ctx(ctx)
+    return ctx
+
 
 STEPS = [
     ("resolve_subtitles", resolve_subtitles),
@@ -33,6 +98,22 @@ STEPS = [
     ("assemble", assemble),
     ("upload_and_callback", upload_and_callback),
 ]
+
+MANUAL_STEPS = [
+    ("prepare_manual", prepare_manual),
+    ("extract_clips", extract_clips),
+    ("generate_tts", generate_tts),
+    ("assemble", assemble),
+    ("upload_and_callback", upload_and_callback),
+]
+
+
+def _is_manual_mode(payload: Dict[str, Any]) -> bool:
+    return (
+        payload.get("script_mode") == "manual"
+        and isinstance(payload.get("segments"), list)
+        and len(payload["segments"]) > 0
+    )
 
 
 async def process_recap_job(job_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -50,7 +131,13 @@ async def process_recap_job(job_id: str, payload: Dict[str, Any]) -> Dict[str, A
     ctx: Dict[str, Any] = {"payload": payload}
     save_ctx(ctx)
 
-    for step_name, step in STEPS:
+    steps = MANUAL_STEPS if _is_manual_mode(payload) else STEPS
+    logger.info(
+        "job=%s project=%s mode=%s",
+        job_id, project_id, "manual" if steps is MANUAL_STEPS else "auto",
+    )
+
+    for step_name, step in steps:
         logger.info("job=%s project=%s step=%s", job_id, project_id, step_name)
         try:
             result = await step(ctx)

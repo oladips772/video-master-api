@@ -36,7 +36,12 @@ async def create_recap(payload: Dict[str, Any]):
     The chain runs asynchronously; the result (or error) is POSTed to
     payload.callback_url. This endpoint only validates and enqueues.
     """
-    for field in ("project_id", "callback_url", "source", "recap", "settings"):
+    manual_mode = payload.get("script_mode") == "manual"
+    # In manual mode the LLM-driven `recap` block is unused, so it's optional.
+    required_top = ("project_id", "callback_url", "source", "settings")
+    if not manual_mode:
+        required_top = required_top + ("recap",)
+    for field in required_top:
         if not payload.get(field):
             raise HTTPException(
                 status_code=400,
@@ -48,6 +53,38 @@ async def create_recap(payload: Dict[str, Any]):
             status_code=400,
             detail="payload.source needs movie_s3_key or movie_url",
         )
+
+    if manual_mode:
+        segments = payload.get("segments")
+        if not isinstance(segments, list) or len(segments) < 10:
+            raise HTTPException(
+                status_code=400,
+                detail="script_mode=manual requires 'segments' to be a list with at least 10 items",
+            )
+        for i, seg in enumerate(segments, start=1):
+            if not isinstance(seg, dict):
+                raise HTTPException(
+                    status_code=400, detail=f"segment {i}: expected object"
+                )
+            narration = seg.get("narration")
+            if not isinstance(narration, str) or not narration.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"segment {i}: 'narration' must be a non-empty string",
+                )
+            try:
+                start = float(seg["source_start"])
+                end = float(seg["source_end"])
+            except (KeyError, TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"segment {i}: 'source_start' and 'source_end' must be numbers",
+                )
+            if start < 0 or end <= start:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"segment {i}: require source_start >= 0 and source_end > source_start",
+                )
 
     job_id = str(uuid.uuid4())
     try:

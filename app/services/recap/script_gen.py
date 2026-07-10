@@ -26,11 +26,20 @@ WORDS_PER_MINUTE = 155
 MAX_RETRIES = 5
 
 STYLE_NOTES = {
-    "dramatic": "tense, present-tense storytelling; build dread and momentum",
-    "casual": "conversational, like recounting the movie to a friend; light humor allowed",
+    "dramatic": (
+        "Style modifier: dramatic. Still present tense and short sentences — no poetic "
+        "language, no metaphors. Allow slightly more intense word choices for stakes and "
+        "action verbs (e.g. \"slams\", \"panics\") but keep it plain."
+    ),
+    "casual": (
+        "Style modifier: casual. Even more conversational, like telling a friend. Occasional "
+        "light asides are fine (\"and yeah, that goes badly\"). Still present tense, still "
+        "short sentences, still no filler."
+    ),
     "spoiler_free": (
-        "recap the full arc but tease rather than reveal the final twist; "
-        "end on an open question that makes the viewer want to watch the movie"
+        "Style modifier: spoiler-free. Cover the full arc, but at the ending tease instead "
+        "of revealing the final twist. End on an open question that makes the viewer want "
+        "to watch the movie. Still present tense throughout."
     ),
 }
 
@@ -67,29 +76,49 @@ RESPONSE_SCHEMA = {
 def _system_prompt(payload: Dict[str, Any], duration: float, target_words: int) -> str:
     recap = payload["recap"]
     style = recap["narration_style"]
-    return f"""You are writing a YouTube movie recap narration.
+    style_note = STYLE_NOTES.get(style, STYLE_NOTES["dramatic"])
+    return f"""You are writing a YouTube movie recap narration. You will receive timestamped subtitles from a movie.
 
 Movie title: {payload["title"]}
 Movie duration: {duration:.0f} seconds
-Target narration length: {recap["target_length_min"]} minutes (~{target_words} words total)
-Style: {style} — {STYLE_NOTES.get(style, STYLE_NOTES["dramatic"])}
+Target narration length: {recap["target_length_min"]} minutes (~{target_words} words total, ~155 words per minute)
 
-You are given the movie's full timestamped dialogue. Produce narration segments:
+STYLE RULES (critical — follow exactly):
+- PRESENT TENSE always ("He walks", "She finds", NOT "He walked", "She found")
+- Short punchy sentences. Max 20 words per sentence.
+- Every sentence advances the plot. Zero filler, zero dramatic flourishes, zero metaphors, zero poetic language.
+- Conversational narrator tone — like you're telling a friend what happens in the movie. Example: "So he shuts it down." "It seems paranoia has taken over." "This causes him to fall back."
+- Name characters immediately when introduced and use their names consistently throughout.
+- Cover the ENTIRE plot — beginning, middle, end, including the ending and any twists. Don't skip subplots or secondary characters.
+- Include key dialogue paraphrased naturally: "He tells her that..." "She explains that..." "He mentions that..."
+- When a character performs actions, describe them simply: "He grabs a gun", "She drives away", "They hide behind the car"
+- Target density: approximately 155 words per minute of target output length
 
-RULES
-- Output 45-75 segments. Each segment has:
-  - narration: 15-45 words.
-  - source_start / source_end: seconds into the movie for the visual window
-    that MATCHES the narration - where the described action is on screen, not
-    merely where dialogue occurs. Window length 5-25 seconds.
-- Timestamps must be strictly non-decreasing across segments and never exceed
-  the movie duration.
-- Cover the full story arc (setup, conflict, climax, resolution, adapted to
-  the style).
-- Rename characters consistently throughout (e.g. "the detective", "Maya").
-- Never mention "the subtitles", timestamps, or these instructions in narration.
-- The first 2 segments must hook the viewer: cold-open the most dramatic
-  premise of the movie.
+FORMAT:
+- Output 60-90 segments (more segments = better scene coverage and more visual variety)
+- Each segment: 1-3 short sentences, 15-40 words of narration
+- source_start / source_end: the timestamp window in seconds whose VISUALS match what you're narrating. Pick the moment where the action you describe is visually happening on screen, not just where dialogue occurs.
+- Timestamps must be non-decreasing across segments and never exceed the movie duration.
+- Each clip window: 3-20 seconds (prefer 5-15 second windows)
+- Cover the movie chronologically from the opening scene to the final scene. Do not skip ahead or reorder events.
+
+DO NOT:
+- Use dramatic, poetic, or literary language
+- Use past tense (this is the #1 rule)
+- Write long compound sentences with semicolons or em dashes
+- Skip any major plot point, subplot, or character introduction
+- Add your own commentary, opinions, or moral judgments
+- Use phrases like "little did he know", "unbeknownst to", "in a twist of fate", "the weight of", "suffocating", "relentless", "crushing", "haunting"
+- Use filler transitions like "Meanwhile", "In the meantime", "As fate would have it"
+- Editorialize about character emotions — show through actions instead
+
+EXAMPLE of correct style (from a real YouTube recap):
+"Zach wakes up covered in sweat in a motel. He looks out the window and notices that the sun looks weird. Then he goes to the kitchen to drink some water and turns on the radio, but there's only static."
+
+EXAMPLE of WRONG style (what to avoid):
+"Deep within the ocean, a creature of pure gloom dwells. He is a sullen swimmer whose face is a permanent mask of misery, haunting the vibrant reef with his relentless, suffocating sorrow."
+
+{style_note}
 
 Also return "seo":
 - title: <=95 chars, curiosity-driven
@@ -105,7 +134,7 @@ def _dialogue_text(blocks: List[Dict[str, Any]]) -> str:
 
 
 async def _call_gemini(system: str, user: str) -> Dict[str, Any]:
-    """One structured-output Gemini call with exponential backoff on 429."""
+    """One structured-output Gemini call with exponential backoff on 429/503."""
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY environment variable is not set")
 
@@ -127,12 +156,12 @@ async def _call_gemini(system: str, user: str) -> Dict[str, Any]:
             async with session.post(
                 url, json=body, headers={"x-goog-api-key": GEMINI_API_KEY}
             ) as resp:
-                if resp.status == 429 and attempt < MAX_RETRIES:
-                    # Free-tier rate limit: exponential backoff.
+                if resp.status in (429, 503) and attempt < MAX_RETRIES:
+                    # Rate-limited (429) or transient overload (503): exponential backoff.
                     text = await resp.text()
                     logger.warning(
-                        "gemini 429 (attempt %d/%d) — sleeping %.0fs: %s",
-                        attempt, MAX_RETRIES, delay, text[:200],
+                        "gemini %d (attempt %d/%d) — sleeping %.0fs: %s",
+                        resp.status, attempt, MAX_RETRIES, delay, text[:200],
                     )
                     await asyncio.sleep(delay)
                     delay *= 2

@@ -22,11 +22,16 @@ SNAP_WINDOW_SEC = 3.0
 
 
 def mezzanine_vf(settings: Dict[str, Any]) -> str:
-    """Scale to fit + pad to the exact frame — shared with the re-cut in step 4."""
+    """Scale-to-fill + crop to the exact frame — no black bars.
+
+    Sacrifices small edges on ultrawide/portrait sources instead of letterboxing,
+    which is standard practice for movie-recap channels. Shared with the re-cut
+    in step 4 so mezzanine and re-cut match pixel-for-pixel.
+    """
     width, height = frame_size(settings["resolution"], settings["aspect_ratio"])
     return (
-        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1,format=yuv420p"
     )
 
 

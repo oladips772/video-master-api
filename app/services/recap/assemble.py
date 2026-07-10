@@ -26,14 +26,28 @@ from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_d
 logger = logging.getLogger(__name__)
 
 
+NARRATION_GAIN = 1.5
+ORIGINAL_VOLUME_CAP = 0.15
+
+
 async def _mux_segment(seg: Dict[str, Any], original_volume: float, dest: str) -> None:
-    """Narration at 1.0; movie audio at `original_volume`, ducked further under
-    speech via sidechaincompress keyed on the narration track."""
-    filter_complex = (
-        f"[0:a]volume={original_volume}[bed];"
-        "[bed][1:a]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=300[ducked];"
-        "[ducked][1:a]amix=inputs=2:duration=first:normalize=0[aout]"
-    )
+    """Narration is king. Boost narration 1.5x; original movie audio at
+    min(original_volume, 0.15), ducked hard under the narration via
+    sidechaincompress. If original_volume <= 0, drop the movie audio entirely.
+    """
+    original_volume = min(max(float(original_volume), 0.0), ORIGINAL_VOLUME_CAP)
+
+    if original_volume <= 0.0:
+        # Fully muted: narration only, still boosted.
+        filter_complex = f"[1:a]volume={NARRATION_GAIN}[aout]"
+    else:
+        filter_complex = (
+            f"[0:a]volume={original_volume}[bed];"
+            f"[1:a]volume={NARRATION_GAIN}[narr];"
+            "[bed][narr]sidechaincompress=threshold=0.02:ratio=10:attack=5:release=100[ducked];"
+            "[ducked][narr]amix=inputs=2:duration=first:normalize=0[aout]"
+        )
+
     await ffmpeg(
         [
             "-i", seg["clip_path"],
