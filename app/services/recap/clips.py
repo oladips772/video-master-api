@@ -17,7 +17,8 @@ ctx out: + {segments[*].clip_path, scene_boundaries?}
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List, Tuple
+import random
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.recap.config import (
     RECAP_MAX_SUBCLIP_SEC,
@@ -137,24 +138,85 @@ def _pick_subclips(
     return subclips or [(source_start, min(source_start + target_duration, source_end))]
 
 
-async def _encode_clip(
-    ctx: Dict[str, Any], start: float, end: float, dest: str, vf: str
-) -> None:
-    """Cut [start, end] from the source and re-encode to mezzanine specs."""
-    settings = ctx["payload"]["settings"]
-    await ffmpeg(
-        [
-            "-ss", f"{start:.3f}",
-            "-to", f"{end:.3f}",
-            "-i", ctx["movie_path"],
-            "-vf", vf,
-            "-r", str(settings["fps"]),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "aac", "-ar", "44100", "-ac", "2",
-            "-movflags", "+faststart",
-            dest,
-        ]
+def build_distortion_filter() -> Optional[Dict[str, str]]:
+    """Return a per-sub-clip distortion recipe (Content-ID break) or None.
+
+    Random ranges match the spec: center-crop 4–6%, zoom 4–7%, subtle
+    horizontal pan wiggle, and video-speed jitter 0.98–1.02x. Composed as
+    plain crop/scale/setpts so it chains cleanly BEFORE the mezzanine
+    scale/crop, keeping every sub-clip at the same final resolution.
+
+    Returned dict keys:
+      vf      — filter chain to prepend to the mezzanine chain
+      af      — atempo compensation so audio stays in sync
+      summary — short label for logging ("crop=95% zoom=106% speed=1.01x")
+
+    Skipped entirely (returns None) when RECAP_DISTORTION_ENABLED != "1".
+    """
+    if os.getenv("RECAP_DISTORTION_ENABLED", "1") != "1":
+        return None
+
+    crop_pct = random.uniform(0.94, 0.96)
+    zoom_pct = random.uniform(1.04, 1.07)
+    pan_amp = random.uniform(0.01, 0.03)
+    speed = random.uniform(0.98, 1.02)
+
+    # Crop tuple: W, H, X, Y. X wobbles with a slow sin() → subtle pan.
+    x_expr = f"(iw-iw*{crop_pct:.4f})/2 + iw*{pan_amp:.4f}*sin(t*2)"
+    y_expr = f"(ih-ih*{crop_pct:.4f})/2"
+    vf = (
+        f"crop=iw*{crop_pct:.4f}:ih*{crop_pct:.4f}:'{x_expr}':{y_expr},"
+        f"scale=iw*{zoom_pct:.4f}:ih*{zoom_pct:.4f},"
+        f"setpts=PTS*{speed:.4f}"
     )
+    # atempo=1/speed compensates the video PTS change so AV stays in sync.
+    af = f"atempo={1.0 / speed:.4f}"
+    summary = (
+        f"crop={int(round(crop_pct * 100))}% "
+        f"zoom={int(round(zoom_pct * 100))}% "
+        f"speed={speed:.2f}x"
+    )
+    return {"vf": vf, "af": af, "summary": summary}
+
+
+async def _encode_clip(
+    ctx: Dict[str, Any],
+    start: float,
+    end: float,
+    dest: str,
+    vf: str,
+    label: Optional[str] = None,
+) -> None:
+    """Cut [start, end] from the source and re-encode to mezzanine specs,
+    optionally prepending a random distortion filter for Content-ID variety.
+    """
+    settings = ctx["payload"]["settings"]
+    distortion = build_distortion_filter()
+
+    args = [
+        "-ss", f"{start:.3f}",
+        "-to", f"{end:.3f}",
+        "-i", ctx["movie_path"],
+    ]
+    if distortion:
+        args += ["-vf", f"{distortion['vf']},{vf}", "-af", distortion["af"]]
+    else:
+        args += ["-vf", vf]
+    args += [
+        "-r", str(settings["fps"]),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", "-ar", "44100", "-ac", "2",
+        "-movflags", "+faststart",
+        dest,
+    ]
+
+    await ffmpeg(args)
+
+    if distortion and label:
+        logger.info(
+            "%s: %.1f-%.1fs | distortion applied: %s",
+            label, start, end, distortion["summary"],
+        )
 
 
 async def _extract_and_concat(
@@ -171,7 +233,8 @@ async def _extract_and_concat(
 
     if len(subclips) == 1:
         s, e = subclips[0]
-        await _encode_clip(ctx, s, e, seg["clip_path"], vf)
+        label = f"seg {seg['id']:03d} clip 1"
+        await _encode_clip(ctx, s, e, seg["clip_path"], vf, label=label)
         return
 
     sub_paths: List[str] = []
@@ -180,7 +243,8 @@ async def _extract_and_concat(
             sub_path = os.path.join(
                 scratch, f"seg_{seg['id']:03d}_sub_{i:02d}.mp4"
             )
-            await _encode_clip(ctx, s, e, sub_path, vf)
+            label = f"seg {seg['id']:03d} clip {i + 1}"
+            await _encode_clip(ctx, s, e, sub_path, vf, label=label)
             sub_paths.append(sub_path)
 
         concat_list = os.path.join(
