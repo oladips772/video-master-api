@@ -22,7 +22,7 @@ import re
 from typing import Any, Dict, Optional
 
 from app.services.audio.text_to_speech import generate_speech_chunked
-from app.services.recap.clips import mezzanine_vf
+from app.services.recap.clips import _encode_clip, mezzanine_vf
 from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
 
 logger = logging.getLogger(__name__)
@@ -43,21 +43,22 @@ def _tts_provider(voice_id: str) -> str:
 
 
 async def _recut_clip(ctx: Dict[str, Any], seg: Dict[str, Any], new_end: float) -> None:
-    """Re-cut the segment's clip from the movie with a later end point."""
+    """Re-cut the segment's clip with a later end point.
+
+    Routed through _encode_clip so reconciliation cuts pick up the same
+    distortion filter (crop+scale+atempo) as the initial multi-cut, keeping
+    every segment consistent under Content-ID fingerprinting.
+    """
     settings = ctx["payload"]["settings"]
     clip = seg["clip_path"]
     tmp = clip + ".recut.mp4"
-    await ffmpeg(
-        [
-            "-ss", f"{seg['source_start']:.3f}",
-            "-to", f"{new_end:.3f}",
-            "-i", ctx["movie_path"],
-            "-vf", mezzanine_vf(settings),
-            "-r", str(settings["fps"]),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "aac", "-ar", "44100", "-ac", "2",
-            tmp,
-        ]
+    await _encode_clip(
+        ctx,
+        seg["source_start"],
+        new_end,
+        tmp,
+        mezzanine_vf(settings),
+        label=f"seg {seg['id']:03d} recut",
     )
     os.replace(tmp, clip)
     seg["source_end"] = new_end
