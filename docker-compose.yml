@@ -32,6 +32,7 @@ services:
       - COQUI_TOS_AGREED=1
     volumes:
       - xtts_models:/app/models
+      - /root/video-master-api/speakers:/app/speakers:ro
     restart: unless-stopped
 
   api:
@@ -49,7 +50,7 @@ services:
       - KOKORO_TIMEOUT=120
       - KOKORO_MAX_TEXT_LENGTH=1000
       - XTTS_API_URL=${XTTS_API_URL:-http://xtts:8020}
-      - XTTS_TIMEOUT=${XTTS_TIMEOUT:-120}
+      - XTTS_TIMEOUT=${XTTS_TIMEOUT:-300}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - RECAP_SCRATCH_ROOT=${RECAP_SCRATCH_ROOT:-/tmp/recap}
@@ -57,6 +58,9 @@ services:
       - RECAP_SCENE_SNAP=${RECAP_SCENE_SNAP:-0}
       - RECAP_FFMPEG_NICE=${RECAP_FFMPEG_NICE:-10}
       - PIPELINE_SHARED_SECRET=${PIPELINE_SHARED_SECRET:-}
+      - AI_PROVIDER=${AI_PROVIDER:-gemini}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
     volumes:
       - /root/video-master-api/speakers:/app/speakers:ro
     depends_on:

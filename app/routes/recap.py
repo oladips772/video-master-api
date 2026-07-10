@@ -49,6 +49,15 @@ async def create_recap(payload: Dict[str, Any]):
             detail="payload.source needs movie_s3_key or movie_url",
         )
 
+    # Manual mode: require at least 10 segments
+    if payload.get("script_mode") == "manual":
+        segs = payload.get("segments", [])
+        if not isinstance(segs, list) or len(segs) < 10:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Manual mode requires at least 10 segments, got {len(segs) if isinstance(segs, list) else 0}",
+            )
+
     job_id = str(uuid.uuid4())
     try:
         await job_queue.add_job(job_id, JobType.RECAP, process_recap_job, payload)

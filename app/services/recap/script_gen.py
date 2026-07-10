@@ -11,6 +11,7 @@ ctx out: + {segments: [{id, narration, source_start, source_end}], seo}
 """
 import asyncio
 import json
+import os
 import logging
 from typing import Any, Dict, List
 
@@ -22,6 +23,12 @@ from app.services.recap.utils import save_ctx
 logger = logging.getLogger(__name__)
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+# --- Provider toggle: set AI_PROVIDER=groq and GROQ_API_KEY to use Groq ---
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "gemini").lower()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
 WORDS_PER_MINUTE = 155
 MAX_RETRIES = 5
 
@@ -104,6 +111,63 @@ def _dialogue_text(blocks: List[Dict[str, Any]]) -> str:
     )
 
 
+
+
+async def _call_groq(system: str, user: str) -> Dict[str, Any]:
+    """Groq call using OpenAI-compatible API with JSON mode."""
+    if not GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEY environment variable is not set")
+
+    schema_instruction = (
+        "\nYou MUST respond with valid JSON only, no markdown, no backticks.\n"
+        "Use this exact schema:\n"
+        '{"segments": [{"id": int, "narration": str, "source_start": float, "source_end": float}], '
+        '"seo": {"title": str, "description": str, "tags": [str]}}'
+    )
+
+    body = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": system + schema_instruction},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.7,
+        "response_format": {"type": "json_object"},
+        "max_tokens": 8000,
+    }
+
+    delay = 5.0
+    timeout = aiohttp.ClientTimeout(total=600)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for attempt in range(1, MAX_RETRIES + 1):
+            async with session.post(
+                GROQ_URL,
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            ) as resp:
+                if resp.status in (429, 503) and attempt < MAX_RETRIES:
+                    text = await resp.text()
+                    logger.warning(
+                        "groq %d (attempt %d/%d) — sleeping %.0fs: %s",
+                        resp.status, attempt, MAX_RETRIES, delay, text[:200],
+                    )
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Groq API returned {resp.status}: {text[:500]}")
+                data = await resp.json()
+                try:
+                    raw = data["choices"][0]["message"]["content"]
+                except (KeyError, IndexError):
+                    raise RuntimeError(f"Groq returned no choices: {json.dumps(data)[:500]}")
+                return json.loads(raw)
+    raise RuntimeError("generate_script: exhausted Groq retries")
+
 async def _call_gemini(system: str, user: str) -> Dict[str, Any]:
     """One structured-output Gemini call with exponential backoff on 429."""
     if not GEMINI_API_KEY:
@@ -127,7 +191,7 @@ async def _call_gemini(system: str, user: str) -> Dict[str, Any]:
             async with session.post(
                 url, json=body, headers={"x-goog-api-key": GEMINI_API_KEY}
             ) as resp:
-                if resp.status == 429 and attempt < MAX_RETRIES:
+                if resp.status in (429, 503) and attempt < MAX_RETRIES:
                     # Free-tier rate limit: exponential backoff.
                     text = await resp.text()
                     logger.warning(
@@ -188,7 +252,10 @@ async def generate_script(ctx: Dict[str, Any]) -> Dict[str, Any]:
     system = _system_prompt(payload, duration, target_words)
     dialogue = _dialogue_text(ctx["dialogue_blocks"])
 
-    result = await _call_gemini(system, dialogue)
+    if AI_PROVIDER == "groq":
+        result = await _call_groq(system, dialogue)
+    else:
+        result = await _call_gemini(system, dialogue)
     segments = _validate_segments(result["segments"], duration)
 
     # Length repair: one re-prompt if narration deviates >30% from target.
@@ -206,7 +273,10 @@ async def generate_script(ctx: Dict[str, Any]) -> Dict[str, Any]:
             f"beats and timestamp discipline, but make the total narration {direction} "
             f"to land near the target.\n\nDIALOGUE:\n{dialogue}"
         )
-        result = await _call_gemini(system, repair)
+        if AI_PROVIDER == "groq":
+            result = await _call_groq(system, repair)
+        else:
+            result = await _call_gemini(system, repair)
         segments = _validate_segments(result["segments"], duration)
 
     seo = result.get("seo") or {}

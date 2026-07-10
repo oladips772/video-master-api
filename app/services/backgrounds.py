@@ -18,6 +18,10 @@ BACKGROUNDS: Dict[str, str] = {
     "subway_surfers": os.path.join(_BACKGROUNDS_DIR, "subway_surfers.mp4"),
     "gta":            os.path.join(_BACKGROUNDS_DIR, "gta.mp4"),
     "satisfying":     os.path.join(_BACKGROUNDS_DIR, "satisfying.mp4"),
+    "messi":          os.path.join(_BACKGROUNDS_DIR, "messi.mp4"),
+    "luxury":         os.path.join(_BACKGROUNDS_DIR, "luxury.mp4"),
+    "transformers":   os.path.join(_BACKGROUNDS_DIR, "transformers.mp4"),
+    "kingdoms":       os.path.join(_BACKGROUNDS_DIR, "kingdoms.mp4"),
 }
 
 
