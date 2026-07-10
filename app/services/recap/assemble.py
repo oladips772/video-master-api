@@ -21,9 +21,43 @@ import os
 from typing import Any, Dict, List, Optional
 
 from app.utils.captions import create_srt_from_word_timestamps
+from app.services.recap.config import (
+    RECAP_WATERMARK_OPACITY,
+    RECAP_WATERMARK_SIZE,
+    RECAP_WATERMARK_TEXT,
+)
 from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
 
 logger = logging.getLogger(__name__)
+
+# Arial Bold ships in the repo's fonts/ dir and is installed under
+# /usr/share/fonts/truetype/custom/ in the api container (see Dockerfile).
+# Fall back to fontconfig (font=Arial) if the file happens not to be there.
+_WATERMARK_FONT_FILE = "/usr/share/fonts/truetype/custom/ARIALBD.TTF"
+
+
+def _escape_drawtext(text: str) -> str:
+    """Escape text for FFmpeg drawtext (single-quoted form)."""
+    return (
+        text.replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
+    )
+
+
+def _watermark_filter() -> str:
+    """Return the drawtext filter for the configured watermark, or empty string."""
+    if not RECAP_WATERMARK_TEXT:
+        return ""
+    text = _escape_drawtext(RECAP_WATERMARK_TEXT)
+    if os.path.exists(_WATERMARK_FONT_FILE):
+        font_part = f"fontfile='{_WATERMARK_FONT_FILE}'"
+    else:
+        font_part = "font=Arial"
+    return (
+        f"drawtext={font_part}:text='{text}'"
+        f":fontsize={RECAP_WATERMARK_SIZE}"
+        f":fontcolor=white@{RECAP_WATERMARK_OPACITY}"
+        f":x=w-tw-20:y=h-th-20"
+    )
 
 
 NARRATION_GAIN = 1.5
@@ -126,9 +160,17 @@ async def _final_encode(
         args = ["-i", base]
         video_in, audio_map = "0:v", "0:a"
 
+    video_filters: List[str] = []
     if ass_path:
         escaped = ass_path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-        filters.append(f"[{video_in}]subtitles='{escaped}'[vout]")
+        video_filters.append(f"subtitles='{escaped}'")
+    watermark = _watermark_filter()
+    if watermark:
+        video_filters.append(watermark)
+        logger.info("applying watermark: %s", RECAP_WATERMARK_TEXT)
+
+    if video_filters:
+        filters.append(f"[{video_in}]{','.join(video_filters)}[vout]")
         video_map = "[vout]"
     else:
         video_map = video_in
