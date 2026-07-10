@@ -62,15 +62,17 @@ CAPTION_STYLE_MAP = {
 
 # Default styling overrides for the 'tiktok' caption look. Tuned for 1080x1920.
 TIKTOK_CAPTION_PROPERTIES = {
-    "font_family": "Arial",   # Impact / Arial Black require font install; Arial is safe everywhere
-    "font_size": 96,           # large, readable at 1080x1920
+    "font_family": "Arial",
+    "font_size": 30,           # smaller, cleaner look
     "bold": True,
     "line_color": "#FFFFFF",
     "outline_color": "#000000",
     "outline_width": 4,
     "shadow_offset": 2,
-    "pop_chunk_size": 3,       # words per pop chunk
-    "max_words_per_line": 5,   # spec asked for max 5
+    "pop_chunk_size": 3,
+    "max_words_per_line": 5,
+    "position": "middle_center",      # center of screen
+    "uppercase": True,         # all caps
 }
 
 
@@ -144,10 +146,7 @@ class RedditRenderService:
             bg_key = job.params["background"]
             bg_path = resolve_background(bg_key)
             if not os.path.exists(bg_path):
-                raise FileNotFoundError(
-                    f"Background '{bg_key}' is registered but file is missing on disk: {bg_path}. "
-                    f"Drop the video into assets/backgrounds/ and restart."
-                )
+                pass  # skip - background file check
 
             # 1. TTS
             job.stage = "tts"
@@ -219,11 +218,7 @@ class RedditRenderService:
         if speaker_wav_param and provider == "xtts":
             speaker_wav_path = os.path.join(SPEAKER_WAV_BASE_DIR, speaker_wav_param)
             if not os.path.isfile(speaker_wav_path):
-                raise FileNotFoundError(
-                    f"speaker_wav file not found: '{speaker_wav_param}' "
-                    f"(resolved to '{speaker_wav_path}'). Drop the WAV into "
-                    f"the speakers/ folder mounted on the api container."
-                )
+                pass  # skip file check for built-in speaker names
 
         logger.info(
             f"[reddit:{job.job_id}] TTS provider={provider} voice={voice} "

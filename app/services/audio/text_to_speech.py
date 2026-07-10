@@ -131,7 +131,7 @@ async def generate_speech_xtts(
         logger.info(f"Calling XTTS speaker={speaker} chars={len(text)} url={url}")
         form = {
             "text": text,
-            "speaker_name": speaker,
+            "speaker_wav": f"{speaker}.wav",
             "language": XTTS_DEFAULT_LANGUAGE,
         }
 
@@ -139,7 +139,8 @@ async def generate_speech_xtts(
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url,
-                data=form,
+                json=form if isinstance(form, dict) else None,
+                data=form if not isinstance(form, dict) else None,
                 timeout=aiohttp.ClientTimeout(total=XTTS_TIMEOUT),
             ) as response:
                 if response.status != 200:
