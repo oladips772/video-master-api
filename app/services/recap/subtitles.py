@@ -16,6 +16,10 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.services.recap.config import RECAP_WHISPER_MODEL
+from app.services.recap.opensubtitles import (
+    clean_movie_filename,
+    fetch_subtitles_from_opensubtitles,
+)
 from app.services.recap.utils import (
     download_source,
     ffmpeg,
@@ -171,6 +175,23 @@ async def resolve_subtitles(ctx: Dict[str, Any]) -> Dict[str, Any]:
             await ffmpeg(["-i", movie, "-map", f"0:s:{sub_stream}", srt_path])
             with open(srt_path, encoding="utf-8", errors="replace") as f:
                 cues = parse_srt(f.read())
+
+        # OpenSubtitles.com search — try before paying for a Whisper pass.
+        if not cues:
+            query = clean_movie_filename(
+                source.get("movie_filename") or payload.get("title") or ""
+            )
+            if query:
+                logger.info("[%s] trying OpenSubtitles for '%s'", project_id, query)
+                os_srt = await fetch_subtitles_from_opensubtitles(query, scratch)
+                if os_srt:
+                    with open(os_srt, encoding="utf-8", errors="replace") as f:
+                        cues = parse_srt(f.read())
+                    if cues:
+                        logger.info(
+                            "[%s] got %d cues from OpenSubtitles", project_id, len(cues)
+                        )
+
         if not cues:
             logger.info("[%s] no usable subtitles — falling back to whisper", project_id)
             cues = await _transcribe_movie(movie)
