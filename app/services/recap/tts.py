@@ -30,7 +30,11 @@ logger = logging.getLogger(__name__)
 TAIL_PAD_SEC = 0.4
 MAX_EXTEND_SEC = 8.0
 MAX_SLOW_FACTOR = 1.18
-TRIM_SLACK_SEC = 1.5
+# 0.3s of slack tolerates rounding without letting per-segment overshoot
+# accumulate as caption-vs-video drift (previously 1.5s → ~1s per segment
+# could survive un-trimmed, adding tens of seconds of drift over a 40+
+# segment recap).
+TRIM_SLACK_SEC = 0.3
 SPEED_MAX = 1.25
 
 # Kokoro voice ids look like af_alloy / am_echo / bf_emma; anything else is

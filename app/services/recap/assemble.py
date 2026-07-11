@@ -107,11 +107,14 @@ async def _build_captions(ctx: Dict[str, Any]) -> Optional[str]:
     word_timestamps: List[Dict[str, Any]] = []
     timeline = 0.0  # segments are back-to-back after concat
     for seg in ctx["segments"]:
-        seg_duration = await media_duration(seg["clip_path"]) or float(seg["tts_duration_sec"])
+        # Advance the timeline by the REAL post-reconciliation clip length so
+        # it includes the tail pad (_reconcile targets tts_duration + 0.4s).
+        # Word timings inside the segment still spread across the bare TTS
+        # duration — that's where speech actually plays.
+        real_dur = await media_duration(seg["clip_path"]) or float(seg["tts_duration_sec"])
         tts_duration = float(seg["tts_duration_sec"])
         words = seg["narration"].split()
         if words:
-            # Proportional spread — no forced alignment available for TTS audio.
             weights = [max(len(w), 2) for w in words]
             total_weight = sum(weights)
             t = 0.0
@@ -121,7 +124,7 @@ async def _build_captions(ctx: Dict[str, Any]) -> Optional[str]:
                     {"word": w, "start": timeline + t, "end": timeline + t + dur}
                 )
                 t += dur
-        timeline += seg_duration
+        timeline += real_dur
 
     if not word_timestamps:
         return None
