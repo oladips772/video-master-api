@@ -27,7 +27,7 @@ RECAP_MAX_SUBCLIP_SEC = float(os.environ.get("RECAP_MAX_SUBCLIP_SEC", "5"))
 # Optional bottom-right channel watermark on the final render. Empty → skip.
 RECAP_WATERMARK_TEXT = os.environ.get("RECAP_WATERMARK_TEXT", "")
 RECAP_WATERMARK_OPACITY = float(os.environ.get("RECAP_WATERMARK_OPACITY", "0.3"))
-RECAP_WATERMARK_SIZE = int(os.environ.get("RECAP_WATERMARK_SIZE", "24"))
+RECAP_WATERMARK_SIZE = int(os.environ.get("RECAP_WATERMARK_SIZE", "40"))
 
 # `nice` level for FFmpeg subprocesses so renders don't starve the API.
 RECAP_FFMPEG_NICE = int(os.environ.get("RECAP_FFMPEG_NICE", "10"))
