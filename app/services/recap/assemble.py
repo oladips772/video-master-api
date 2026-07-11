@@ -26,7 +26,13 @@ from app.services.recap.config import (
     RECAP_WATERMARK_SIZE,
     RECAP_WATERMARK_TEXT,
 )
-from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
+from app.services.recap.utils import (
+    download_url,
+    ffmpeg,
+    media_duration,
+    save_ctx,
+    scratch_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,18 +142,54 @@ async def _build_captions(ctx: Dict[str, Any]) -> Optional[str]:
     return ass_path
 
 
+async def _fetch_music(ctx: Dict[str, Any]) -> Optional[str]:
+    """Download the background music to the scratch dir ONCE and return the
+    local path. Looping a remote URL with -stream_loop -1 during the final
+    encode buffers the network input unboundedly and gets FFmpeg OOM-killed
+    (signal -9) on this box — loop a local file instead.
+
+    Returns None (render proceeds without music) when no music is configured
+    or the download fails."""
+    settings = ctx["payload"]["settings"]
+    music_url = settings.get("background_music")
+    if not music_url:
+        return None
+
+    project_id = ctx["payload"]["project_id"]
+    local = os.path.join(scratch_dir(project_id), "background_music.mp3")
+    if os.path.exists(local) and os.path.getsize(local) > 0:
+        return local
+    try:
+        await download_url(music_url, local)
+        return local
+    except Exception:
+        logger.warning(
+            "[%s] background music download failed — rendering without music",
+            project_id,
+            exc_info=True,
+        )
+        return None
+
+
 async def _final_encode(
     ctx: Dict[str, Any], base: str, ass_path: Optional[str], dest: str
 ) -> None:
     """Music bed + caption burn + final quality encode in one pass."""
     settings = ctx["payload"]["settings"]
-    music_url = settings.get("background_music")
+    music_path = await _fetch_music(ctx)
     music_volume = settings.get("background_music_volume", 0.07)
     total = await media_duration(base) or 0.0
 
     filters: List[str] = []
-    if music_url:
-        args = ["-stream_loop", "-1", "-i", music_url, "-i", base]
+    if music_path:
+        # -thread_queue_size bounds the looped input's queue; the local file
+        # makes the loop cheap (no network buffering).
+        args = [
+            "-thread_queue_size", "512",
+            "-stream_loop", "-1",
+            "-i", music_path,
+            "-i", base,
+        ]
         base_a, music_a, video_in = "1:a", "0:a", "1:v"
         fade_out_start = max(0.0, total - 3.0)
         filters.append(
@@ -187,6 +229,10 @@ async def _final_encode(
             *args,
             "-c:v", "libx264", "-preset", "medium", "-crf", "19",
             "-c:a", "aac", "-b:a", "192k",
+            # Resource bounds: shared VPS with limited RAM — cap encoder
+            # threads and the muxing queue instead of letting them balloon.
+            "-threads", "2",
+            "-max_muxing_queue_size", "1024",
             "-movflags", "+faststart",
             "-shortest",
             dest,
