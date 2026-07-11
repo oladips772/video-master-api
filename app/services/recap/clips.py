@@ -157,9 +157,13 @@ def build_distortion_filter() -> Optional[Dict[str, str]]:
         return None
 
     crop_pct = random.uniform(0.94, 0.96)
-    zoom_pct = random.uniform(1.04, 1.07)
-    pan_amp = random.uniform(0.01, 0.03)
-    speed = random.uniform(0.98, 1.02)
+    # Zoom: base 1.03 + range 0.01 → subtle static 3–4% zoom-in.
+    zoom_pct = random.uniform(1.03, 1.04)
+    # Pan amplitude capped at 0.008 so the sin() drift stays sub-pixel-per-sec
+    # on typical resolutions — reads as a still frame, not a shake.
+    pan_amp = random.uniform(0.002, 0.008)
+    # ±1% speed jitter — enough for Content-ID variance, imperceptible to viewers.
+    speed = random.uniform(0.99, 1.01)
 
     # Crop tuple: W, H, X, Y. X wobbles with a slow sin() → subtle pan.
     x_expr = f"(iw-iw*{crop_pct:.4f})/2 + iw*{pan_amp:.4f}*sin(t*2)"

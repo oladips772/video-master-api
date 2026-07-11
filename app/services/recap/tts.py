@@ -140,6 +140,27 @@ async def _reconcile(ctx: Dict[str, Any], idx: int) -> None:
         await _trim_clip(seg, a)
 
 
+async def _trim_leading_silence(audio_path: str) -> None:
+    """Strip leading silence from a TTS output.
+
+    Kokoro/XTTS both add a short lead-in silence (typically 100–400ms) to
+    every generated file. Under the per-segment sidechain mux this reads as
+    the original movie audio playing for that beat before narration kicks in
+    — the "narration starts a little slow" symptom. silenceremove trims it
+    in place; running it a second time on already-trimmed audio is a no-op.
+    """
+    tmp = audio_path + ".trim.mp3"
+    await ffmpeg(
+        [
+            "-i", audio_path,
+            "-af",
+            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB",
+            tmp,
+        ]
+    )
+    os.replace(tmp, audio_path)
+
+
 async def generate_tts(ctx: Dict[str, Any]) -> Dict[str, Any]:
     payload = ctx["payload"]
     scratch = scratch_dir(payload["project_id"])
@@ -150,11 +171,18 @@ async def generate_tts(ctx: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("[%s] TTS provider=%s voice=%s", payload["project_id"], provider, voice_id)
 
     for seg in ctx["segments"]:
+        # Trailing full-stops make Kokoro/XTTS tack on a small end-of-utterance
+        # pause; strip them so the next segment starts cleanly. rstrip("." )
+        # removes both a trailing period and any trailing whitespace it leaves.
+        seg["narration"] = (seg.get("narration") or "").rstrip(". ").rstrip()
+
         audio_path = os.path.join(scratch, f"seg_{seg['id']:03d}.mp3")
         if not (os.path.exists(audio_path) and os.path.getsize(audio_path) > 0):
             await generate_speech_chunked(
                 seg["narration"], voice_id, speed, audio_path, provider=provider
             )
+            # Only trim freshly generated TTS — cached files were already trimmed.
+            await _trim_leading_silence(audio_path)
         seg["tts_path"] = audio_path
         seg["tts_duration_sec"] = await media_duration(audio_path)
         if seg["tts_duration_sec"] is None:
