@@ -22,13 +22,11 @@ import re
 from typing import Any, Dict, Optional
 
 from app.services.audio.text_to_speech import generate_speech_chunked
-from app.services.recap.clips import _encode_clip, mezzanine_vf
 from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
 
 logger = logging.getLogger(__name__)
 
 TAIL_PAD_SEC = 0.4
-MAX_EXTEND_SEC = 8.0
 MAX_SLOW_FACTOR = 1.18
 # 0.3s of slack tolerates rounding without letting per-segment overshoot
 # accumulate as caption-vs-video drift (previously 1.5s → ~1s per segment
@@ -44,28 +42,6 @@ _KOKORO_VOICE = re.compile(r"^[a-z]{2}_[a-z0-9]+$")
 
 def _tts_provider(voice_id: str) -> str:
     return "kokoro" if _KOKORO_VOICE.match(voice_id or "") else "xtts"
-
-
-async def _recut_clip(ctx: Dict[str, Any], seg: Dict[str, Any], new_end: float) -> None:
-    """Re-cut the segment's clip with a later end point.
-
-    Routed through _encode_clip so reconciliation cuts pick up the same
-    distortion filter (crop+scale+atempo) as the initial multi-cut, keeping
-    every segment consistent under Content-ID fingerprinting.
-    """
-    settings = ctx["payload"]["settings"]
-    clip = seg["clip_path"]
-    tmp = clip + ".recut.mp4"
-    await _encode_clip(
-        ctx,
-        seg["source_start"],
-        new_end,
-        tmp,
-        mezzanine_vf(settings),
-        label=f"seg {seg['id']:03d} recut",
-    )
-    os.replace(tmp, clip)
-    seg["source_end"] = new_end
 
 
 async def _retime_clip(seg: Dict[str, Any], factor: float, freeze_to: Optional[float]) -> None:
@@ -109,36 +85,25 @@ async def _trim_clip(seg: Dict[str, Any], new_duration: float) -> None:
 async def _reconcile(ctx: Dict[str, Any], idx: int) -> None:
     segments = ctx["segments"]
     seg = segments[idx]
-    movie_duration = float(ctx["movie_duration_sec"])
-
     v = await media_duration(seg["clip_path"]) or 0.0
     a = float(seg["tts_duration_sec"]) + TAIL_PAD_SEC
 
+    if v <= 0.0:
+        logger.warning("seg %03d: zero-length clip, skipping reconcile", seg["id"])
+        return
+
     if a > v:
-        # 1) Extend the source window if there's room.
-        next_start = (
-            segments[idx + 1]["source_start"] if idx + 1 < len(segments) else movie_duration
+        # Narration longer than the multi-cut clip: slow the clip (hard-capped),
+        # then freeze the last frame to cover any remainder. We do NOT re-cut
+        # into continuous source footage — that would destroy the multi-cut
+        # variety and was the source of the "frozen/wrong-footage" drift bug.
+        factor = min(a / v, MAX_SLOW_FACTOR, SPEED_MAX)
+        freeze = a - v * factor if v * factor < a else None
+        logger.info(
+            "seg %03d: retime x%.3f%s (v=%.2fs a=%.2fs)",
+            seg["id"], factor, f" + freeze {freeze:.2f}s" if freeze else "", v, a,
         )
-        max_end = min(seg["source_end"] + MAX_EXTEND_SEC, movie_duration, next_start)
-        needed_end = seg["source_start"] + a
-        if max_end > seg["source_end"] + 0.25:
-            new_end = min(needed_end, max_end)
-            logger.info(
-                "seg %03d: extending clip %.2fs -> %.2fs", seg["id"], seg["source_end"], new_end
-            )
-            await _recut_clip(ctx, seg, new_end)
-            v = await media_duration(seg["clip_path"]) or v
-
-        if a > v:
-            # 2) Slow the clip (hard-capped), 3) freeze the tail if still short.
-            factor = min(a / v, MAX_SLOW_FACTOR, SPEED_MAX)
-            freeze = a - v * factor if v * factor < a else None
-            logger.info(
-                "seg %03d: retime x%.3f%s",
-                seg["id"], factor, f" + freeze {freeze:.2f}s" if freeze else "",
-            )
-            await _retime_clip(seg, factor, freeze)
-
+        await _retime_clip(seg, factor, freeze)
     elif v > a + TRIM_SLACK_SEC:
         logger.info("seg %03d: trimming clip %.2fs -> %.2fs", seg["id"], v, a)
         await _trim_clip(seg, a)
