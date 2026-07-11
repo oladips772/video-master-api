@@ -37,6 +37,14 @@ SNAP_WINDOW_SEC = 3.0
 # (before TTS actually runs). Matches script_gen's target density.
 _WORDS_PER_MINUTE = 155.0
 
+# Cut ~25% more footage per segment than the narration estimate calls for.
+# Real TTS often runs longer than the WPM estimate; without headroom, the
+# reconcile step ends up slowing or freezing the clip. With headroom the
+# clip is almost always longer than the audio, so reconcile can just TRIM
+# (seamless) instead of slowing/freezing (visible). Extra footage never
+# leaks past source_end — the picker caps every sub-clip to the window.
+FOOTAGE_HEADROOM = 1.25
+
 
 def mezzanine_vf(settings: Dict[str, Any]) -> str:
     """Scale-to-fill + crop to the exact frame — no black bars.
@@ -324,20 +332,27 @@ async def extract_clips(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
         if RECAP_MULTI_CUT:
             narr_dur = _estimate_narration_duration(seg["narration"])
+            # Aim for narr_dur * headroom of footage, but never past source_end
+            # — the picker itself caps every sub-clip to the window, and the
+            # tier logic decides sub-clip count from this padded target.
+            window = seg["source_end"] - seg["source_start"]
+            target_footage = min(narr_dur * FOOTAGE_HEADROOM, window)
             subclips = _pick_subclips(
-                seg["source_start"], seg["source_end"], narr_dur, boundaries
+                seg["source_start"], seg["source_end"], target_footage, boundaries
             )
         else:
             subclips = [(seg["source_start"], seg["source_end"])]
 
         if len(subclips) > 1:
             picks_str = ", ".join(f"{s:.1f}-{e:.1f}" for s, e in subclips)
+            total_footage = sum(e - s for s, e in subclips)
             logger.info(
-                "[%s] seg %03d: source %.1f-%.1fs (%.1fs), narr ~%.1fs → %d sub-clips [%s]",
+                "[%s] seg %03d: source %.1f-%.1fs (%.1fs), narr ~%.1fs, footage %.1fs → %d sub-clips [%s]",
                 project_id, seg["id"],
                 seg["source_start"], seg["source_end"],
                 seg["source_end"] - seg["source_start"],
                 _estimate_narration_duration(seg["narration"]),
+                total_footage,
                 len(subclips), picks_str,
             )
         else:

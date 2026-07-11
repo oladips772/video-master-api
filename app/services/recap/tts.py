@@ -27,7 +27,10 @@ from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_d
 logger = logging.getLogger(__name__)
 
 TAIL_PAD_SEC = 0.4
-MAX_SLOW_FACTOR = 1.18
+# Safety net for the rare segment where even 25% footage headroom in
+# clips.py isn't enough — allow slow-mo up to 1.25x before the freeze
+# fallback kicks in. Still imperceptible to viewers.
+MAX_SLOW_FACTOR = 1.25
 # 0.3s of slack tolerates rounding without letting per-segment overshoot
 # accumulate as caption-vs-video drift (previously 1.5s → ~1s per segment
 # could survive un-trimmed, adding tens of seconds of drift over a 40+
