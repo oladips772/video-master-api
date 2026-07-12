@@ -174,70 +174,87 @@ async def _fetch_music(ctx: Dict[str, Any]) -> Optional[str]:
 async def _final_encode(
     ctx: Dict[str, Any], base: str, ass_path: Optional[str], dest: str
 ) -> None:
-    """Music bed + caption burn + final quality encode in one pass."""
+    """Two-pass to avoid OOM: 1) downscale video only, 2) captions+watermark+music.
+
+    base is the already-concatenated MP4 (recap_concat.mp4), so it is read as a
+    normal input, NOT via the concat demuxer.
+
+    The ffmpeg() helper prepends ["ffmpeg", "-hide_banner", "-y"], so the command
+    lists here must start with the first real argument (no leading "ffmpeg").
+    """
+    import os
     settings = ctx["payload"]["settings"]
     music_path = await _fetch_music(ctx)
     music_volume = settings.get("background_music_volume", 0.07)
     total = await media_duration(base) or 0.0
+    temp_nofx = os.path.join(os.path.dirname(dest), "final_nofx.mp4")
 
-    filters: List[str] = []
+    # ===== PASS 1: Video only — downscale, no captions/music =====
+    # NOTE: no setpts speed change — it desyncs captions across the timeline.
+    vf_pass1 = "scale=1280:720,fps=24"
+
+    cmd1 = [
+        "-threads", "1",
+        "-i", base,
+        "-vf", vf_pass1,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+        "-an",
+        temp_nofx,
+    ]
+    await ffmpeg(cmd1)
+
+    # ===== PASS 2: captions + watermark + music =====
+    # Build a single -filter_complex so video filters and audio mix coexist.
+    video_chain = []
+    if ass_path:
+        video_chain.append(f"subtitles={ass_path}:force_style='FontName=Arial,FontSize=56'")
+    video_chain.append(
+        "drawtext=text='Wonder Recap':fontcolor=white@0.85:box=1:boxcolor=black@0.4:"
+        "boxborderw=8:x=w-tw-24:y=h-th-24"
+    )
+    video_fc = "[0:v]" + ",".join(video_chain) + "[vout]"
+
+    cmd2 = [
+        "-threads", "1",
+        "-i", temp_nofx,
+    ]
+
+    filter_parts = [video_fc]
+
     if music_path:
-        # -thread_queue_size bounds the looped input's queue; the local file
-        # makes the loop cheap (no network buffering).
-        args = [
+        fade_out_start = max(0.0, total - 3.0)
+        cmd2.extend([
             "-thread_queue_size", "512",
             "-stream_loop", "-1",
             "-i", music_path,
-            "-i", base,
-        ]
-        base_a, music_a, video_in = "1:a", "0:a", "1:v"
-        fade_out_start = max(0.0, total - 3.0)
-        filters.append(
-            f"[{music_a}]volume={music_volume},afade=t=in:d=2,"
+        ])
+        filter_parts.append(
+            f"[1:a]volume={music_volume},afade=t=in:d=2,"
             f"afade=t=out:st={fade_out_start:.2f}:d=3[music]"
         )
-        filters.append(
-            f"[music][{base_a}]sidechaincompress=threshold=0.03:ratio=6:attack=10:release=400[mducked]"
+        filter_parts.append(
+            "[music][0:a]sidechaincompress=threshold=0.03:ratio=6:attack=10:release=400[mducked]"
         )
-        filters.append(f"[mducked][{base_a}]amix=inputs=2:duration=first:normalize=0[aout]")
+        filter_parts.append(
+            "[mducked][0:a]amix=inputs=2:duration=first:normalize=0[aout]"
+        )
         audio_map = "[aout]"
     else:
-        args = ["-i", base]
-        video_in, audio_map = "0:v", "0:a"
+        audio_map = "0:a"
 
-    video_filters: List[str] = []
-    if ass_path:
-        escaped = ass_path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-        video_filters.append(f"subtitles='{escaped}'")
-    watermark = _watermark_filter()
-    if watermark:
-        video_filters.append(watermark)
-        logger.info("applying watermark: %s", RECAP_WATERMARK_TEXT)
+    cmd2.extend([
+        "-filter_complex", ";".join(filter_parts),
+        "-map", "[vout]",
+        "-map", audio_map,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",
+        dest,
+    ])
+    await ffmpeg(cmd2)
 
-    if video_filters:
-        filters.append(f"[{video_in}]{','.join(video_filters)}[vout]")
-        video_map = "[vout]"
-    else:
-        video_map = video_in
-
-    if filters:
-        args += ["-filter_complex", ";".join(filters)]
-    args += ["-map", video_map, "-map", audio_map]
-
-    await ffmpeg(
-        [
-            *args,
-            "-c:v", "libx264", "-preset", "medium", "-crf", "19",
-            "-c:a", "aac", "-b:a", "192k",
-            # Resource bounds: shared VPS with limited RAM — cap encoder
-            # threads and the muxing queue instead of letting them balloon.
-            "-threads", "2",
-            "-max_muxing_queue_size", "1024",
-            "-movflags", "+faststart",
-            "-shortest",
-            dest,
-        ]
-    )
+    if os.path.exists(temp_nofx):
+        os.remove(temp_nofx)
 
 
 async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
