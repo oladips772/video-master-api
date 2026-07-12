@@ -257,6 +257,53 @@ async def _final_encode(
         os.remove(temp_nofx)
 
 
+# async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
+#     payload = ctx["payload"]
+#     project_id = payload["project_id"]
+#     scratch = scratch_dir(project_id)
+#     settings = payload["settings"]
+
+#     # 1) Per-segment narration mux.
+#     muxed: List[str] = []
+#     for seg in ctx["segments"]:
+#         dest = os.path.join(scratch, f"mux_{seg['id']:03d}.mp4")
+#         if not (os.path.exists(dest) and os.path.getsize(dest) > 0):
+#             await _mux_segment(seg, settings.get("original_audio_volume", 0.12), dest)
+#         muxed.append(dest)
+#     logger.info("[%s] muxed %d segments", project_id, len(muxed))
+
+#     # 2) Concat (lossless — uniform mezzanine).
+#     concat_list = os.path.join(scratch, "concat.txt")
+#     with open(concat_list, "w") as f:
+#         for p in muxed:
+#             f.write(f"file '{p}'\n")
+#     concatenated = os.path.join(scratch, "recap_concat.mp4")
+#     await ffmpeg(["-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", concatenated])
+
+#     # 3) Captions (repo ASS system).
+#     ass_path = None
+#     if settings.get("captions_enabled"):
+#         ass_path = await _build_captions(ctx)
+
+#     # 4) Music + captions + final encode.
+#     final = os.path.join(scratch, "recap_final.mp4")
+#     await _final_encode(ctx, concatenated, ass_path, final)
+#     logger.info(
+#         "[%s] final render: %s (%.1fs)",
+#         project_id, final, await media_duration(final) or -1,
+#     )
+
+#     # The caption system writes its .ass into the repo temp dir — clean it.
+#     if ass_path and os.path.exists(ass_path):
+#         try:
+#             os.remove(ass_path)
+#         except OSError:
+#             pass
+
+#     ctx["final_path"] = final
+#     save_ctx(ctx)
+#     return ctx
+
 async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
     payload = ctx["payload"]
     project_id = payload["project_id"]
@@ -272,28 +319,33 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
         muxed.append(dest)
     logger.info("[%s] muxed %d segments", project_id, len(muxed))
 
-    # 2) Concat (lossless — uniform mezzanine).
+    # 2) Concat TXT -> Base MP4. FIXED
     concat_list = os.path.join(scratch, "concat.txt")
     with open(concat_list, "w") as f:
         for p in muxed:
             f.write(f"file '{p}'\n")
-    concatenated = os.path.join(scratch, "recap_concat.mp4")
-    await ffmpeg(["-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", concatenated])
+
+    base_video = os.path.join(scratch, "recap_concat.mp4") # NEW
+    await ffmpeg(["-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", "-threads", "1", base_video]) # NEW
+    logger.info("[%s] base video created: %s", project_id, base_video)
 
     # 3) Captions (repo ASS system).
     ass_path = None
     if settings.get("captions_enabled"):
         ass_path = await _build_captions(ctx)
 
-    # 4) Music + captions + final encode.
+    # 4) Music + captions + final encode. FIXED: pass base_video
     final = os.path.join(scratch, "recap_final.mp4")
-    await _final_encode(ctx, concatenated, ass_path, final)
+    logger.info("[%s] PASS 1 starting", project_id) # NEW log
+    await _final_encode(ctx, base_video, ass_path, final) # CHANGED: concatenated -> base_video
+    logger.info("[%s] PASS 2 done", project_id) # NEW log
+
     logger.info(
         "[%s] final render: %s (%.1fs)",
         project_id, final, await media_duration(final) or -1,
     )
 
-    # The caption system writes its .ass into the repo temp dir — clean it.
+    # The caption system writes its.ass into the repo temp dir — clean it.
     if ass_path and os.path.exists(ass_path):
         try:
             os.remove(ass_path)
