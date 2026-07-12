@@ -1,3 +1,5 @@
+# @format
+
 name: Deploy to VPS
 on:
   push:
@@ -14,7 +16,22 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
+            set -e
             cd /root/video-master-api
-            git pull origin main
-            docker compose build api
+
+            echo "Pulling latest code..."
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "Building api with no cache..."
+            docker compose build api --no-cache --pull
+
+            echo "Restarting api..."
             docker compose up -d api
+
+            echo "Pruning old images..."
+            docker image prune -f
+
+            echo "Verifying deploy..."
+            docker compose ps api
+            docker compose exec -T api grep "base_video" /app/app/services/recap/assemble.py || echo "WARN: base_video not found"
