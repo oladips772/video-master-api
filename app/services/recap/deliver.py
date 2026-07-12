@@ -49,6 +49,7 @@ async def upload_and_callback(ctx: Dict[str, Any]) -> Dict[str, Any]:
     payload = ctx["payload"]
     project_id = payload["project_id"]
 
+    success = False
     try:
         s3_key = f"recaps/{project_id}.mp4"
         url = await asyncio.get_event_loop().run_in_executor(
@@ -65,13 +66,23 @@ async def upload_and_callback(ctx: Dict[str, Any]) -> Dict[str, Any]:
         }
         await _post_callback(payload["callback_url"], body)
         logger.info("[%s] delivered: %s", project_id, url.split("?")[0])
+        success = True
         return {"project_id": project_id, "final_video_url": url, "s3_key": s3_key}
     finally:
-        cleanup_scratch(project_id)
+        if success:
+            cleanup_scratch(project_id)
+        else:
+            logger.warning(
+                "[%s] delivery failed — preserving scratch dir for diagnosis",
+                project_id,
+            )
 
 
 async def report_error(payload: Dict[str, Any], step_name: str, error: Any) -> None:
-    """Tell Recap Studio the render failed, then clean up. Never raises."""
+    """Tell Recap Studio the render failed. Never raises. Scratch is preserved
+    for diagnosis — do NOT clean up here; upload_and_callback owns cleanup and
+    only runs it on success.
+    """
     project_id = payload.get("project_id", "?")
     try:
         await _post_callback(
@@ -81,8 +92,7 @@ async def report_error(payload: Dict[str, Any], step_name: str, error: Any) -> N
         logger.info("[%s] error callback sent (%s)", project_id, step_name)
     except Exception:
         logger.exception("[%s] error callback itself failed", project_id)
-    finally:
-        try:
-            cleanup_scratch(project_id)
-        except Exception:
-            pass
+    logger.warning(
+        "[%s] render failed at step=%s — scratch preserved at %s/%s",
+        project_id, step_name, "RECAP_SCRATCH_ROOT", project_id,
+    )

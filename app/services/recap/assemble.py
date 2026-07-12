@@ -176,11 +176,9 @@ async def _final_encode(
 ) -> None:
     """Two-pass to avoid OOM: 1) downscale video only, 2) captions+watermark+music.
 
-    base is the already-concatenated MP4 (recap_concat.mp4), so it is read as a
-    normal input, NOT via the concat demuxer.
-
-    The ffmpeg() helper prepends ["ffmpeg", "-hide_banner", "-y"], so the command
-    lists here must start with the first real argument (no leading "ffmpeg").
+    base is the already-concatenated MP4 (recap_concat.mp4), read as a normal
+    input (NOT the concat demuxer). The ffmpeg() helper prepends
+    ["ffmpeg","-hide_banner","-y"], so command lists start with the first real arg.
     """
     import os
     settings = ctx["payload"]["settings"]
@@ -189,25 +187,34 @@ async def _final_encode(
     total = await media_duration(base) or 0.0
     temp_nofx = os.path.join(os.path.dirname(dest), "final_nofx.mp4")
 
-    # ===== PASS 1: Video only — downscale, no captions/music =====
-    # NOTE: no setpts speed change — it desyncs captions across the timeline.
-    vf_pass1 = "scale=1280:720,fps=24"
-
+    # ===== PASS 1: downscale video only, clean CFR timeline =====
     cmd1 = [
         "-threads", "1",
+        "-fflags", "+genpts",
         "-i", base,
-        "-vf", vf_pass1,
+        "-vf", "scale=1280:720,format=yuv420p",
+        "-r", "24",
+        "-vsync", "cfr",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
         "-an",
         temp_nofx,
     ]
     await ffmpeg(cmd1)
 
-    # ===== PASS 2: captions + watermark + music =====
-    # Build a single -filter_complex so video filters and audio mix coexist.
+    # ===== SANITY GUARD: fail fast if pass 1 ballooned =====
+    nofx_dur = await media_duration(temp_nofx) or 0.0
+    if nofx_dur > max(total * 1.5, 1800.0):
+        raise RuntimeError(
+            f"pass 1 duration ballooned to {nofx_dur:.0f}s (source {total:.0f}s) "
+            f"— aborting before the expensive pass 2"
+        )
+
+    # ===== PASS 2: captions + watermark + music (single filter_complex) =====
     video_chain = []
     if ass_path:
-        video_chain.append(f"subtitles={ass_path}:force_style='FontName=Arial,FontSize=56'")
+        video_chain.append(
+            f"subtitles={ass_path}:force_style='FontName=Arial,FontSize=56'"
+        )
     video_chain.append(
         "drawtext=text='Wonder Recap':fontcolor=white@0.85:box=1:boxcolor=black@0.4:"
         "boxborderw=8:x=w-tw-24:y=h-th-24"
@@ -218,16 +225,16 @@ async def _final_encode(
         "-threads", "1",
         "-i", temp_nofx,
     ]
-
     filter_parts = [video_fc]
 
     if music_path:
-        fade_out_start = max(0.0, total - 3.0)
+        fade_out_start = max(0.0, nofx_dur - 3.0)
         cmd2.extend([
             "-thread_queue_size", "512",
             "-stream_loop", "-1",
             "-i", music_path,
         ])
+        # music is input 1; use 1:a explicitly (mp3 may carry a cover-image stream)
         filter_parts.append(
             f"[1:a]volume={music_volume},afade=t=in:d=2,"
             f"afade=t=out:st={fade_out_start:.2f}:d=3[music]"
@@ -325,9 +332,28 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
         for p in muxed:
             f.write(f"file '{p}'\n")
 
-    base_video = os.path.join(scratch, "recap_concat.mp4") # NEW
-    await ffmpeg(["-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", "-threads", "1", base_video]) # NEW
-    logger.info("[%s] base video created: %s", project_id, base_video)
+    base_video = os.path.join(scratch, "recap_concat.mp4")
+    # Re-encode (not -c copy) with genpts + cfr to rebuild ONE clean, continuous
+    # 24fps timeline. Segments have inconsistent timebases/PTS after trim/retime/
+    # freeze in reconciliation; stream-copy concat compounds those into a
+    # massively inflated duration (22+ hours). Re-encoding fixes it at the source.
+    await ffmpeg([
+        "-f", "concat", "-safe", "0", "-fflags", "+genpts", "-i", concat_list,
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-r", "24", "-vsync", "cfr",
+        "-c:a", "aac", "-ar", "44100", "-ac", "2",
+        "-threads", "1",
+        base_video,
+    ])
+    concat_dur = await media_duration(base_video) or 0.0
+    logger.info("[%s] base video created: %s (%.1fs)", project_id, base_video, concat_dur)
+    # Guard: if concat is still absurd, fail now (seconds) not after the encode.
+    expected_max = sum(float(s.get("tts_duration_sec", 0) or 0) for s in ctx["segments"]) + 120.0
+    if concat_dur > max(expected_max, 1800.0):
+        raise RuntimeError(
+            f"concat duration {concat_dur:.0f}s exceeds expected ~{expected_max:.0f}s "
+            f"— segment timestamps still broken"
+        )
 
     # 3) Captions (repo ASS system).
     ass_path = None
