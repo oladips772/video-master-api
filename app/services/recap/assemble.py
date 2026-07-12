@@ -190,12 +190,14 @@ async def _final_encode(
     # ===== PASS 1: downscale video only, clean CFR timeline =====
     cmd1 = [
         "-threads", "1",
+        "-x264-params", "pools=1", # NEW: limit x264 RAM
+        "-max_muxing_queue_size", "1024", # NEW: limit mux queue
         "-fflags", "+genpts",
         "-i", base,
         "-vf", "scale=1280:720,format=yuv420p",
         "-r", "24",
         "-vsync", "cfr",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", # ultrafast->veryfast uses less peak RAM
         "-an",
         temp_nofx,
     ]
@@ -223,6 +225,8 @@ async def _final_encode(
 
     cmd2 = [
         "-threads", "1",
+        "-x264-params", "pools=1", # NEW
+        "-max_muxing_queue_size", "1024", # NEW
         "-i", temp_nofx,
     ]
     filter_parts = [video_fc]
@@ -234,7 +238,6 @@ async def _final_encode(
             "-stream_loop", "-1",
             "-i", music_path,
         ])
-        # music is input 1; use 1:a explicitly (mp3 may carry a cover-image stream)
         filter_parts.append(
             f"[1:a]volume={music_volume},afade=t=in:d=2,"
             f"afade=t=out:st={fade_out_start:.2f}:d=3[music]"
@@ -253,7 +256,7 @@ async def _final_encode(
         "-filter_complex", ";".join(filter_parts),
         "-map", "[vout]",
         "-map", audio_map,
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "24",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", # ultrafast->veryfast
         "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart",
         dest,
