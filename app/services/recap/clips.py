@@ -194,33 +194,31 @@ def _pick_subclips(
 #     )
 #     return {"vf": vf, "af": af, "summary": summary}
 
-
 def build_distortion_filter() -> Optional[Dict[str, str]]:
-    """Return a per-sub-clip distortion recipe: crop + shake only. No speed changes."""
+    """Return a per-sub-clip distortion recipe: crop + handheld shake only."""
     if os.getenv("RECAP_DISTORTION_ENABLED", "1") != "1":
         return None
 
     import random
 
-    crop_pct = 0.96  # 4% crop to give shake room
-    out_w = 1280  # hardcode to match your mezzanine size
+    crop_pct = 0.96
+    out_w = 1280
     out_h = 720
     crop_w = int(out_w * crop_pct)  # 1228
     crop_h = int(out_h * crop_pct)  # 691
-    shake_px = random.uniform(12.0, 22.0)
-    zoom_pulse = random.uniform(0.008, 0.015)
+    shake_px = random.uniform(10.0, 18.0)
 
+    # Only crop + random offset. No zoompan, no t, no sin
+    # random(0) gives new value every frame = handheld shake
     vf = (
         f"crop={crop_w}:{crop_h}:(iw-{crop_w})/2+random(0)*{shake_px:.1f}:(ih-{crop_h})/2+random(0)*{shake_px:.1f},"
-        f"scale={out_w}:{out_h}:flags=lanczos,"
-        f"zoompan=z='1+{zoom_pulse:.3f}*sin(2*PI*t*3)':d=1:x='iw/2-(iw/zoom/2)+random(0)*3':y='ih/2-(ih/zoom/2)+random(0)*3':s={out_w}x{out_h}"
+        f"scale={out_w}:{out_h}:flags=lanczos"
     )
     
-    af = "anull"  # use anull instead of None so it doesn't crash caller
+    af = "anull"
     summary = f"crop=96% shake={shake_px:.0f}px"
 
     return {"vf": vf, "af": af, "summary": summary}
-
 
 async def _encode_clip(
     ctx: Dict[str, Any],
