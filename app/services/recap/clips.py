@@ -146,48 +146,72 @@ def _pick_subclips(
     return subclips or [(source_start, min(source_start + target_duration, source_end))]
 
 
+# --- Old distortion recipe (crop + zoom + speed jitter). Superseded below by
+# a crop+shake-only version with no speed change. Kept for reference.
+#
+# def build_distortion_filter() -> Optional[Dict[str, str]]:
+#     """Return a per-sub-clip distortion recipe (Content-ID break) or None.
+#
+#     Random ranges match the spec: center-crop 4–6%, zoom 4–7%, subtle
+#     horizontal pan wiggle, and video-speed jitter 0.98–1.02x. Composed as
+#     plain crop/scale/setpts so it chains cleanly BEFORE the mezzanine
+#     scale/crop, keeping every sub-clip at the same final resolution.
+#
+#     Returned dict keys:
+#       vf      — filter chain to prepend to the mezzanine chain
+#       af      — atempo compensation so audio stays in sync
+#       summary — short label for logging ("crop=95% zoom=106% speed=1.01x")
+#
+#     Skipped entirely (returns None) when RECAP_DISTORTION_ENABLED != "1".
+#     """
+#     if os.getenv("RECAP_DISTORTION_ENABLED", "1") != "1":
+#         return None
+#
+#     crop_pct = random.uniform(0.94, 0.96)
+#     # Zoom: base 1.03 + range 0.01 → subtle static 3–4% zoom-in.
+#     zoom_pct = random.uniform(1.03, 1.04)
+#     # Pan amplitude capped at 0.008 so the sin() drift stays sub-pixel-per-sec
+#     # on typical resolutions — reads as a still frame, not a shake.
+#     pan_amp = random.uniform(0.002, 0.008)
+#     # ±1% speed jitter — enough for Content-ID variance, imperceptible to viewers.
+#     speed = random.uniform(0.99, 1.01)
+#
+#     # Crop tuple: W, H, X, Y. X wobbles with a slow sin() → subtle pan.
+#     x_expr = f"(iw-iw*{crop_pct:.4f})/2 + iw*{pan_amp:.4f}*sin(t*2)"
+#     y_expr = f"(ih-ih*{crop_pct:.4f})/2"
+#     vf = (
+#         f"crop=iw*{crop_pct:.4f}:ih*{crop_pct:.4f}:'{x_expr}':{y_expr},"
+#         f"scale=iw*{zoom_pct:.4f}:ih*{zoom_pct:.4f},"
+#         f"setpts=PTS*{speed:.4f}"
+#     )
+#     # atempo=1/speed compensates the video PTS change so AV stays in sync.
+#     af = f"atempo={1.0 / speed:.4f}"
+#     summary = (
+#         f"crop={int(round(crop_pct * 100))}% "
+#         f"zoom={int(round(zoom_pct * 100))}% "
+#         f"speed={speed:.2f}x"
+#     )
+#     return {"vf": vf, "af": af, "summary": summary}
+
+
 def build_distortion_filter() -> Optional[Dict[str, str]]:
-    """Return a per-sub-clip distortion recipe (Content-ID break) or None.
-
-    Random ranges match the spec: center-crop 4–6%, zoom 4–7%, subtle
-    horizontal pan wiggle, and video-speed jitter 0.98–1.02x. Composed as
-    plain crop/scale/setpts so it chains cleanly BEFORE the mezzanine
-    scale/crop, keeping every sub-clip at the same final resolution.
-
-    Returned dict keys:
-      vf      — filter chain to prepend to the mezzanine chain
-      af      — atempo compensation so audio stays in sync
-      summary — short label for logging ("crop=95% zoom=106% speed=1.01x")
-
-    Skipped entirely (returns None) when RECAP_DISTORTION_ENABLED != "1".
-    """
+    """Return a per-sub-clip distortion recipe: crop + shake only. No speed changes."""
     if os.getenv("RECAP_DISTORTION_ENABLED", "1") != "1":
         return None
 
-    crop_pct = random.uniform(0.94, 0.96)
-    # Zoom: base 1.03 + range 0.01 → subtle static 3–4% zoom-in.
-    zoom_pct = random.uniform(1.03, 1.04)
-    # Pan amplitude capped at 0.008 so the sin() drift stays sub-pixel-per-sec
-    # on typical resolutions — reads as a still frame, not a shake.
-    pan_amp = random.uniform(0.002, 0.008)
-    # ±1% speed jitter — enough for Content-ID variance, imperceptible to viewers.
-    speed = random.uniform(0.99, 1.01)
+    crop_pct = 0.96  # 4% crop to give shake room
+    shake_px = random.uniform(12.0, 22.0)  # handheld shake amount
+    zoom_pulse = random.uniform(0.008, 0.015)  # 0.8% to 1.5% breathing
 
-    # Crop tuple: W, H, X, Y. X wobbles with a slow sin() → subtle pan.
-    x_expr = f"(iw-iw*{crop_pct:.4f})/2 + iw*{pan_amp:.4f}*sin(t*2)"
-    y_expr = f"(ih-ih*{crop_pct:.4f})/2"
     vf = (
-        f"crop=iw*{crop_pct:.4f}:ih*{crop_pct:.4f}:'{x_expr}':{y_expr},"
-        f"scale=iw*{zoom_pct:.4f}:ih*{zoom_pct:.4f},"
-        f"setpts=PTS*{speed:.4f}"
+        f"crop=iw*{crop_pct:.3f}:ih*{crop_pct:.3f}:(iw-iw*{crop_pct:.3f})/2+random(0)*{shake_px:.1f}:(ih-ih*{crop_pct:.3f})/2+random(0)*{shake_px:.1f},"
+        f"scale=iw/{crop_pct:.3f}:ih/{crop_pct:.3f}:flags=lanczos,"
+        f"zoompan=z='1+{zoom_pulse:.3f}*sin(2*PI*t*3)':d=1:x='iw/2-(iw/zoom/2)+random(0)*3':y='ih/2-(ih/zoom/2)+random(0)*3':s=iw:ih"
     )
-    # atempo=1/speed compensates the video PTS change so AV stays in sync.
-    af = f"atempo={1.0 / speed:.4f}"
-    summary = (
-        f"crop={int(round(crop_pct * 100))}% "
-        f"zoom={int(round(zoom_pct * 100))}% "
-        f"speed={speed:.2f}x"
-    )
+
+    af = None  # no speed change = no audio tempo change
+    summary = f"crop=96% shake={shake_px:.0f}px"
+
     return {"vf": vf, "af": af, "summary": summary}
 
 
@@ -217,7 +241,13 @@ async def _encode_clip(
 
     if distortion:
         video_filters = f"{distortion['vf']},{vf},setpts=PTS-STARTPTS"
-        audio_filters = f"{distortion['af']},asetpts=PTS-STARTPTS"
+        # Distortion recipes without a speed change (af=None) skip atempo —
+        # asetpts alone still resets audio PTS to 0.
+        audio_filters = (
+            f"{distortion['af']},asetpts=PTS-STARTPTS"
+            if distortion.get("af")
+            else "asetpts=PTS-STARTPTS"
+        )
     else:
         video_filters = f"{vf},setpts=PTS-STARTPTS"
         audio_filters = "asetpts=PTS-STARTPTS"
