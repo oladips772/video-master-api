@@ -27,7 +27,7 @@ from app.services.recap.config import (
     RECAP_SCENE_SNAP,
     frame_size,
 )
-from app.services.recap.utils import ffmpeg, save_ctx, scratch_dir
+from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
 
 logger = logging.getLogger(__name__)
 
@@ -201,20 +201,33 @@ async def _encode_clip(
 ) -> None:
     """Cut [start, end] from the source and re-encode to mezzanine specs,
     optionally prepending a random distortion filter for Content-ID variety.
+
+    Seek is INPUT-side (-ss before -i) for speed, paired with a DURATION-based
+    cut (-t, not -to) so the read length can't be misread as an absolute
+    position in the original timeline. setpts=PTS-STARTPTS / asetpts=PTS-STARTPTS
+    are appended as the LAST filter on each stream so every sub-clip's encoded
+    frames start at PTS 0 regardless of how far into the movie they were cut
+    from — without this reset, frames cut from e.g. the 45-minute mark can keep
+    PTS values around 2700s, which is what inflated concatenated durations to
+    8x actual length.
     """
     settings = ctx["payload"]["settings"]
     distortion = build_distortion_filter()
+    duration = end - start
+
+    if distortion:
+        video_filters = f"{distortion['vf']},{vf},setpts=PTS-STARTPTS"
+        audio_filters = f"{distortion['af']},asetpts=PTS-STARTPTS"
+    else:
+        video_filters = f"{vf},setpts=PTS-STARTPTS"
+        audio_filters = "asetpts=PTS-STARTPTS"
 
     args = [
         "-ss", f"{start:.3f}",
-        "-to", f"{end:.3f}",
         "-i", ctx["movie_path"],
-    ]
-    if distortion:
-        args += ["-vf", f"{distortion['vf']},{vf}", "-af", distortion["af"]]
-    else:
-        args += ["-vf", vf]
-    args += [
+        "-t", f"{duration:.3f}",
+        "-vf", video_filters,
+        "-af", audio_filters,
         "-r", str(settings["fps"]),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
         "-c:a", "aac", "-ar", "44100", "-ac", "2",
@@ -237,56 +250,73 @@ async def _extract_and_concat(
     subclips: List[Tuple[float, float]],
     vf: str,
 ) -> None:
-    """Cut each sub-clip to a temp file and concat-copy them into seg['clip_path'].
+    """Cut each sub-clip to a temp file and concat them into seg['clip_path'].
 
     Single sub-clip → skip the concat and emit the final path directly.
+
+    The intra-segment concat re-encodes (not -c copy): sub-clips are small
+    (a handful of 2-5s cuts) so the cost is negligible, and re-encoding here
+    is extra insurance against any residual timestamp inconsistency between
+    sub-clips instead of trusting stream-copy to staple them cleanly.
     """
-    scratch = scratch_dir(ctx["payload"]["project_id"])
+    project_id = ctx["payload"]["project_id"]
+    scratch = scratch_dir(project_id)
+    expected_dur = sum(e - s for s, e in subclips)
 
     if len(subclips) == 1:
         s, e = subclips[0]
         label = f"seg {seg['id']:03d} clip 1"
         await _encode_clip(ctx, s, e, seg["clip_path"], vf, label=label)
-        return
+    else:
+        sub_paths: List[str] = []
+        try:
+            for i, (s, e) in enumerate(subclips):
+                sub_path = os.path.join(
+                    scratch, f"seg_{seg['id']:03d}_sub_{i:02d}.mp4"
+                )
+                label = f"seg {seg['id']:03d} clip {i + 1}"
+                await _encode_clip(ctx, s, e, sub_path, vf, label=label)
+                sub_paths.append(sub_path)
 
-    sub_paths: List[str] = []
-    try:
-        for i, (s, e) in enumerate(subclips):
-            sub_path = os.path.join(
-                scratch, f"seg_{seg['id']:03d}_sub_{i:02d}.mp4"
+            concat_list = os.path.join(
+                scratch, f"seg_{seg['id']:03d}_concat.txt"
             )
-            label = f"seg {seg['id']:03d} clip {i + 1}"
-            await _encode_clip(ctx, s, e, sub_path, vf, label=label)
-            sub_paths.append(sub_path)
+            with open(concat_list, "w") as f:
+                for p in sub_paths:
+                    f.write(f"file '{p}'\n")
 
-        concat_list = os.path.join(
-            scratch, f"seg_{seg['id']:03d}_concat.txt"
-        )
-        with open(concat_list, "w") as f:
+            await ffmpeg(
+                [
+                    "-f", "concat", "-safe", "0", "-fflags", "+genpts",
+                    "-i", concat_list,
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-c:a", "aac", "-ar", "44100", "-ac", "2",
+                    "-movflags", "+faststart",
+                    seg["clip_path"],
+                ]
+            )
+        finally:
+            # Sub-clip temps are only useful for building the final; drop them.
             for p in sub_paths:
-                f.write(f"file '{p}'\n")
-
-        await ffmpeg(
-            [
-                "-f", "concat", "-safe", "0",
-                "-i", concat_list,
-                "-c", "copy",
-                "-movflags", "+faststart",
-                seg["clip_path"],
-            ]
-        )
-    finally:
-        # Sub-clip temps are only useful for building the final; drop them.
-        for p in sub_paths:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+            list_path = os.path.join(scratch, f"seg_{seg['id']:03d}_concat.txt")
             try:
-                os.remove(p)
+                os.remove(list_path)
             except OSError:
                 pass
-        list_path = os.path.join(scratch, f"seg_{seg['id']:03d}_concat.txt")
-        try:
-            os.remove(list_path)
-        except OSError:
-            pass
+
+    # Diagnostic: catch corrupted timestamps at the source, not 20 minutes
+    # later at the final concat. Warn-only — this never blocks the render.
+    actual_dur = await media_duration(seg["clip_path"]) or 0.0
+    if actual_dur > expected_dur * 1.5 + 2.0:
+        logger.warning(
+            "[%s] seg %03d: clip duration %.2fs far exceeds expected %.2fs — "
+            "possible timestamp corruption at extraction",
+            project_id, seg["id"], actual_dur, expected_dur,
+        )
 
 
 async def extract_clips(ctx: Dict[str, Any]) -> Dict[str, Any]:
