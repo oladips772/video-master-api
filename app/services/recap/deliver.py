@@ -9,7 +9,7 @@ ctx in:  {payload, final_path, segments, seo}
 """
 import asyncio
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 
@@ -43,6 +43,53 @@ async def _post_callback(callback_url: str, body: Dict[str, Any]) -> None:
             if resp.status >= 300:
                 text = await resp.text()
                 raise RuntimeError(f"callback returned {resp.status}: {text[:300]}")
+
+
+async def report_progress(
+    payload: Dict[str, Any],
+    step: str,
+    step_label: str,
+    percent: float,
+    message: str,
+    current: Optional[int] = None,
+    total: Optional[int] = None,
+) -> None:
+    """Best-effort progress ping to Recap Studio's progress_url.
+
+    NEVER raises — a failed or missing progress_url must not interrupt the
+    render. Short 3s timeout so an unreachable progress endpoint can't stall
+    the pipeline. Uses the same X-Pipeline-Secret header as the final
+    callback for consistency.
+    """
+    progress_url = payload.get("progress_url")
+    if not progress_url:
+        return  # older Recap Studio version without progress support — skip silently
+
+    body = {
+        "step": step,
+        "step_label": step_label,
+        "percent": max(0.0, min(100.0, percent)),
+        "message": message,
+        "current": current,
+        "total": total,
+    }
+
+    headers = {"Content-Type": "application/json"}
+    if PIPELINE_SHARED_SECRET:
+        headers["X-Pipeline-Secret"] = PIPELINE_SHARED_SECRET
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=3)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(progress_url, json=body, headers=headers) as resp:
+                if resp.status >= 400:
+                    logger.debug(
+                        "progress ping non-200 (%s) for step=%s — ignoring",
+                        resp.status, step,
+                    )
+    except Exception as e:
+        # Never let a progress ping failure affect the render.
+        logger.debug("progress ping failed for step=%s: %s", step, e)
 
 
 async def upload_and_callback(ctx: Dict[str, Any]) -> Dict[str, Any]:

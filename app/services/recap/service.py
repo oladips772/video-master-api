@@ -24,7 +24,7 @@ from typing import Any, Dict
 
 from app.services.recap.assemble import assemble
 from app.services.recap.clips import extract_clips
-from app.services.recap.deliver import report_error, upload_and_callback
+from app.services.recap.deliver import report_error, report_progress, upload_and_callback
 from app.services.recap.script_gen import generate_script
 from app.services.recap.subtitles import resolve_subtitles
 from app.services.recap.tts import generate_tts
@@ -36,6 +36,20 @@ from app.services.recap.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Coarse step-level progress: (step_label, percent, message). Fired once at
+# the START of each step, before it runs. Fine-grained per-segment pings
+# happen inside clips.py (15→50%) and tts.py (50→82%); assemble.py fires an
+# additional "final_encode" sub-phase ping (88%) before the heavy final pass.
+STEP_PROGRESS: Dict[str, tuple] = {
+    "resolve_subtitles": ("Preparing subtitles", 2, "Preparing subtitles"),
+    "generate_script": ("Writing script", 8, "Writing script"),
+    "prepare_manual": ("Preparing segments", 5, "Preparing manual segments"),
+    "extract_clips": ("Extracting clips", 15, "Extracting clips"),
+    "generate_tts": ("Generating narration", 50, "Generating narration"),
+    "assemble": ("Assembling video", 82, "Muxing and concatenating segments"),
+    "upload_and_callback": ("Uploading", 98, "Uploading finished video"),
+}
 
 
 async def prepare_manual(ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -139,6 +153,10 @@ async def process_recap_job(job_id: str, payload: Dict[str, Any]) -> Dict[str, A
 
     for step_name, step in steps:
         logger.info("job=%s project=%s step=%s", job_id, project_id, step_name)
+        step_label, percent, message = STEP_PROGRESS.get(
+            step_name, (step_name, 0, step_name)
+        )
+        await report_progress(payload, step_name, step_label, percent, message)
         try:
             result = await step(ctx)
         except Exception as exc:

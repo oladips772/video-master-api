@@ -22,6 +22,7 @@ import re
 from typing import Any, Dict, Optional
 
 from app.services.audio.text_to_speech import generate_speech_chunked
+from app.services.recap.deliver import report_progress
 from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
 
 logger = logging.getLogger(__name__)
@@ -142,7 +143,8 @@ async def generate_tts(ctx: Dict[str, Any]) -> Dict[str, Any]:
     provider = _tts_provider(voice_id)
     logger.info("[%s] TTS provider=%s voice=%s", payload["project_id"], provider, voice_id)
 
-    for seg in ctx["segments"]:
+    total_segments = len(ctx["segments"])
+    for idx, seg in enumerate(ctx["segments"]):
         # Trailing full-stops make Kokoro/XTTS tack on a small end-of-utterance
         # pause; strip them so the next segment starts cleanly. rstrip("." )
         # removes both a trailing period and any trailing whitespace it leaves.
@@ -160,8 +162,19 @@ async def generate_tts(ctx: Dict[str, Any]) -> Dict[str, Any]:
         if seg["tts_duration_sec"] is None:
             raise RuntimeError(f"generate_tts: could not read duration of {audio_path}")
 
-    for idx in range(len(ctx["segments"])):
         await _reconcile(ctx, idx)
+
+        # Segment-level progress only (never finer than per-segment).
+        seg_percent = 50 + (32 * (idx + 1) / total_segments)
+        await report_progress(
+            payload,
+            "generate_tts",
+            "Generating narration",
+            seg_percent,
+            f"Generating narration ({idx + 1}/{total_segments})",
+            current=idx + 1,
+            total=total_segments,
+        )
 
     save_ctx(ctx)
     return ctx

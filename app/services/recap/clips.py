@@ -27,6 +27,7 @@ from app.services.recap.config import (
     RECAP_SCENE_SNAP,
     frame_size,
 )
+from app.services.recap.deliver import report_progress
 from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
 
 logger = logging.getLogger(__name__)
@@ -199,17 +200,23 @@ def build_distortion_filter() -> Optional[Dict[str, str]]:
     if os.getenv("RECAP_DISTORTION_ENABLED", "1") != "1":
         return None
 
+    import random
+
     crop_pct = 0.96  # 4% crop to give shake room
-    shake_px = random.uniform(12.0, 22.0)  # handheld shake amount
-    zoom_pulse = random.uniform(0.008, 0.015)  # 0.8% to 1.5% breathing
+    out_w = 1280  # hardcode to match your mezzanine size
+    out_h = 720
+    crop_w = int(out_w * crop_pct)  # 1228
+    crop_h = int(out_h * crop_pct)  # 691
+    shake_px = random.uniform(12.0, 22.0)
+    zoom_pulse = random.uniform(0.008, 0.015)
 
     vf = (
-        f"crop=iw*{crop_pct:.3f}:ih*{crop_pct:.3f}:(iw-iw*{crop_pct:.3f})/2+random(0)*{shake_px:.1f}:(ih-ih*{crop_pct:.3f})/2+random(0)*{shake_px:.1f},"
-        f"scale=iw/{crop_pct:.3f}:ih/{crop_pct:.3f}:flags=lanczos,"
-        f"zoompan=z='1+{zoom_pulse:.3f}*sin(2*PI*t*3)':d=1:x='iw/2-(iw/zoom/2)+random(0)*3':y='ih/2-(ih/zoom/2)+random(0)*3':s=iw:ih"
+        f"crop={crop_w}:{crop_h}:(iw-{crop_w})/2+random(0)*{shake_px:.1f}:(ih-{crop_h})/2+random(0)*{shake_px:.1f},"
+        f"scale={out_w}:{out_h}:flags=lanczos,"
+        f"zoompan=z='1+{zoom_pulse:.3f}*sin(2*PI*t*3)':d=1:x='iw/2-(iw/zoom/2)+random(0)*3':y='ih/2-(ih/zoom/2)+random(0)*3':s={out_w}x{out_h}"
     )
-
-    af = None  # no speed change = no audio tempo change
+    
+    af = "anull"  # use anull instead of None so it doesn't crash caller
     summary = f"crop=96% shake={shake_px:.0f}px"
 
     return {"vf": vf, "af": af, "summary": summary}
@@ -384,46 +391,59 @@ async def extract_clips(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 seg["source_end"] = min(seg["source_start"] + 5.0, duration)
 
     vf = mezzanine_vf(settings)
-    for seg in ctx["segments"]:
+    total_segments = len(ctx["segments"])
+    for idx, seg in enumerate(ctx["segments"]):
         clip = os.path.join(scratch, f"seg_{seg['id']:03d}.mp4")
         seg["clip_path"] = clip
-        if os.path.exists(clip) and os.path.getsize(clip) > 0:
-            continue  # resumable
+        if not (os.path.exists(clip) and os.path.getsize(clip) > 0):
+            if RECAP_MULTI_CUT:
+                narr_dur = _estimate_narration_duration(seg["narration"])
+                # Aim for narr_dur * headroom of footage, but never past source_end
+                # — the picker itself caps every sub-clip to the window, and the
+                # tier logic decides sub-clip count from this padded target.
+                window = seg["source_end"] - seg["source_start"]
+                target_footage = min(narr_dur * FOOTAGE_HEADROOM, window)
+                subclips = _pick_subclips(
+                    seg["source_start"], seg["source_end"], target_footage, boundaries
+                )
+            else:
+                subclips = [(seg["source_start"], seg["source_end"])]
 
-        if RECAP_MULTI_CUT:
-            narr_dur = _estimate_narration_duration(seg["narration"])
-            # Aim for narr_dur * headroom of footage, but never past source_end
-            # — the picker itself caps every sub-clip to the window, and the
-            # tier logic decides sub-clip count from this padded target.
-            window = seg["source_end"] - seg["source_start"]
-            target_footage = min(narr_dur * FOOTAGE_HEADROOM, window)
-            subclips = _pick_subclips(
-                seg["source_start"], seg["source_end"], target_footage, boundaries
-            )
-        else:
-            subclips = [(seg["source_start"], seg["source_end"])]
+            if len(subclips) > 1:
+                picks_str = ", ".join(f"{s:.1f}-{e:.1f}" for s, e in subclips)
+                total_footage = sum(e - s for s, e in subclips)
+                logger.info(
+                    "[%s] seg %03d: source %.1f-%.1fs (%.1fs), narr ~%.1fs, footage %.1fs → %d sub-clips [%s]",
+                    project_id, seg["id"],
+                    seg["source_start"], seg["source_end"],
+                    seg["source_end"] - seg["source_start"],
+                    _estimate_narration_duration(seg["narration"]),
+                    total_footage,
+                    len(subclips), picks_str,
+                )
+            else:
+                s, e = subclips[0]
+                logger.info(
+                    "[%s] seg %03d: source %.1f-%.1fs → 1 clip [%.1f-%.1f]",
+                    project_id, seg["id"],
+                    seg["source_start"], seg["source_end"], s, e,
+                )
 
-        if len(subclips) > 1:
-            picks_str = ", ".join(f"{s:.1f}-{e:.1f}" for s, e in subclips)
-            total_footage = sum(e - s for s, e in subclips)
-            logger.info(
-                "[%s] seg %03d: source %.1f-%.1fs (%.1fs), narr ~%.1fs, footage %.1fs → %d sub-clips [%s]",
-                project_id, seg["id"],
-                seg["source_start"], seg["source_end"],
-                seg["source_end"] - seg["source_start"],
-                _estimate_narration_duration(seg["narration"]),
-                total_footage,
-                len(subclips), picks_str,
-            )
-        else:
-            s, e = subclips[0]
-            logger.info(
-                "[%s] seg %03d: source %.1f-%.1fs → 1 clip [%.1f-%.1f]",
-                project_id, seg["id"],
-                seg["source_start"], seg["source_end"], s, e,
-            )
+            await _extract_and_concat(ctx, seg, subclips, vf)
 
-        await _extract_and_concat(ctx, seg, subclips, vf)
+        # Fires whether the segment was freshly extracted or resumed from
+        # disk, so progress never stalls on a resumed job. Segment-level
+        # granularity only — never per sub-clip.
+        seg_percent = 15 + (35 * (idx + 1) / total_segments)
+        await report_progress(
+            payload,
+            "extract_clips",
+            "Extracting clips",
+            seg_percent,
+            f"Extracting clips ({idx + 1}/{total_segments})",
+            current=idx + 1,
+            total=total_segments,
+        )
 
     save_ctx(ctx)
     return ctx

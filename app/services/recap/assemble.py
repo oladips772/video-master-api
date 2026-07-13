@@ -26,6 +26,7 @@ from app.services.recap.config import (
     RECAP_WATERMARK_SIZE,
     RECAP_WATERMARK_TEXT,
 )
+from app.services.recap.deliver import report_progress
 from app.services.recap.utils import (
     download_url,
     ffmpeg,
@@ -366,6 +367,13 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # 4) Music + captions + final encode. FIXED: pass base_video
     final = os.path.join(scratch, "recap_final.mp4")
     logger.info("[%s] PASS 1 starting", project_id) # NEW log
+    await report_progress(
+        payload,
+        "final_encode",
+        "Rendering final video",
+        88,
+        "Rendering final video with captions and audio",
+    )
     await _final_encode(ctx, base_video, ass_path, final) # CHANGED: concatenated -> base_video
     logger.info("[%s] PASS 2 done", project_id) # NEW log
 
