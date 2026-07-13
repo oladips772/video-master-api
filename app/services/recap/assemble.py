@@ -190,14 +190,14 @@ async def _final_encode(
     # ===== PASS 1: downscale video only, clean CFR timeline =====
     cmd1 = [
         "-threads", "1",
-        "-x264-params", "pools=1", # NEW: limit x264 RAM
-        "-max_muxing_queue_size", "1024", # NEW: limit mux queue
         "-fflags", "+genpts",
         "-i", base,
         "-vf", "scale=1280:720,format=yuv420p",
         "-r", "24",
-        "-vsync", "cfr",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", # ultrafast->veryfast uses less peak RAM
+        "-fps_mode", "cfr",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+        "-x264-params", "pools=1",
+        "-max_muxing_queue_size", "1024",
         "-an",
         temp_nofx,
     ]
@@ -213,54 +213,54 @@ async def _final_encode(
 
     # ===== PASS 2: captions + watermark + music (single filter_complex) =====
     video_chain = []
-    if ass_path:
+    if ass_path and os.path.exists(ass_path):
+        # Escape : and ' so ffmpeg doesn't break
+        safe_ass = ass_path.replace(":", r"\:").replace("'", r"\'")
         video_chain.append(
-            f"subtitles={ass_path}:force_style='FontName=Arial,FontSize=56'"
+            f"subtitles={safe_ass}:force_style='FontName=Arial,FontSize=56'"
         )
+
     video_chain.append(
         "drawtext=text='Wonder Recap':fontcolor=white@0.85:box=1:boxcolor=black@0.4:"
         "boxborderw=8:x=w-tw-24:y=h-th-24"
     )
-    video_fc = "[0:v]" + ",".join(video_chain) + "[vout]"
+
+    # Use -filter_complex only if we have multiple filters, else -vf
+    if len(video_chain) > 1:
+        video_fc = "[0:v]" + ",".join(video_chain) + "[vout]"
+        vf_args = ["-filter_complex", video_fc, "-map", "[vout]"]
+    else:
+        vf_args = ["-vf", video_chain[0]]
 
     cmd2 = [
         "-threads", "1",
-        "-x264-params", "pools=1", # NEW
-        "-max_muxing_queue_size", "1024", # NEW
         "-i", temp_nofx,
-    ]
-    filter_parts = [video_fc]
+    ] + vf_args
 
+    # Add music if present
     if music_path:
         fade_out_start = max(0.0, nofx_dur - 3.0)
         cmd2.extend([
-            "-thread_queue_size", "512",
-            "-stream_loop", "-1",
             "-i", music_path,
+            "-filter_complex", f"[1:a]volume={music_volume},afade=t=out:st={fade_out_start}:d=3[a1]",
+            "-map", "[vout]" if len(video_chain) > 1 else "0:v",
+            "-map", "[a1]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-x264-params", "pools=1",
+            "-c:a", "aac", "-b:a", "128k",
+            "-shortest",
+            "-max_muxing_queue_size", "1024",
+            dest,
         ])
-        filter_parts.append(
-            f"[1:a]volume={music_volume},afade=t=in:d=2,"
-            f"afade=t=out:st={fade_out_start:.2f}:d=3[music]"
-        )
-        filter_parts.append(
-            "[music][0:a]sidechaincompress=threshold=0.03:ratio=6:attack=10:release=400[mducked]"
-        )
-        filter_parts.append(
-            "[mducked][0:a]amix=inputs=2:duration=first:normalize=0[aout]"
-        )
-        audio_map = "[aout]"
     else:
-        audio_map = "0:a"
+        cmd2.extend([
+            "-an",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+            "-x264-params", "pools=1",
+            "-max_muxing_queue_size", "1024",
+            dest,
+        ])
 
-    cmd2.extend([
-        "-filter_complex", ";".join(filter_parts),
-        "-map", "[vout]",
-        "-map", audio_map,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", # ultrafast->veryfast
-        "-c:a", "aac", "-b:a", "128k",
-        "-movflags", "+faststart",
-        dest,
-    ])
     await ffmpeg(cmd2)
 
     if os.path.exists(temp_nofx):
