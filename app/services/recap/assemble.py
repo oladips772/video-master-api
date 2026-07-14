@@ -67,7 +67,7 @@ def _watermark_filter() -> str:
     )
 
 
-NARRATION_GAIN = 1.5
+NARRATION_GAIN = 1.9
 ORIGINAL_VOLUME_CAP = 0.15
 
 
@@ -267,19 +267,23 @@ async def _fetch_music(ctx: Dict[str, Any]) -> Optional[str]:
 #     if os.path.exists(temp_nofx):
 #         os.remove(temp_nofx)
 
-# meta ai code
 async def _final_encode(
     ctx: Dict[str, Any], base: str, ass_path: Optional[str], dest: str
 ) -> None:
-    """Two-pass to avoid OOM: 1) downscale + keep audio, 2) captions+watermark+music mix."""
-    import os
+    """Two-pass to avoid OOM: 1) downscale + keep audio, 2) captions+watermark+music mix.
+
+    base is the already-concatenated MP4 (recap_concat.mp4); its audio track
+    is the per-segment narration+original-audio-bed mix from _mux_segment.
+    Pass 1 keeps that audio through the downscale so pass 2 can duck the
+    (looped) music bed under it via sidechaincompress.
+    """
     settings = ctx["payload"]["settings"]
     music_path = await _fetch_music(ctx)
     music_volume = settings.get("background_music_volume", 0.07)
     total = await media_duration(base) or 0.0
     temp_nofx = os.path.join(os.path.dirname(dest), "final_nofx.mp4")
 
-    # ===== PASS 1: downscale video + KEEP AUDIO for Kokoro =====
+    # ===== PASS 1: downscale video, KEEP the narration/bed audio =====
     cmd1 = [
         "-threads", "1",
         "-fflags", "+genpts",
@@ -289,67 +293,78 @@ async def _final_encode(
         "-fps_mode", "cfr",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
         "-x264-params", "pools=1",
-        "-c:a", "aac", "-b:a", "96k", # KEEP AUDIO
+        "-c:a", "aac", "-b:a", "96k",
         "-max_muxing_queue_size", "1024",
         temp_nofx,
     ]
     await ffmpeg(cmd1)
 
-    # ===== SANITY GUARD =====
+    # ===== SANITY GUARD: fail fast if pass 1 ballooned =====
     nofx_dur = await media_duration(temp_nofx) or 0.0
     if nofx_dur > max(total * 1.5, 1800.0):
         raise RuntimeError(
-            f"pass 1 duration ballooned to {nofx_dur:.0f}s (source {total:.0f}s)"
+            f"pass 1 duration ballooned to {nofx_dur:.0f}s (source {total:.0f}s) "
+            f"— aborting before the expensive pass 2"
         )
 
-    # ===== PASS 2: captions + watermark + mix Kokoro + Music =====
+    # ===== PASS 2: captions + watermark + music (single filter_complex) =====
     video_filters = []
     if ass_path and os.path.exists(ass_path):
         safe_ass = ass_path.replace(":", r"\:").replace("'", r"\'")
         video_filters.append(
             f"subtitles={safe_ass}:force_style='FontName=Arial,FontSize=56'"
         )
-
     video_filters.append(
         "drawtext=text='Wonder Recap':fontcolor=white@0.85:box=1:boxcolor=black@0.4:"
         "boxborderw=8:x=w-tw-24:y=h-th-24"
     )
+    video_fc = "[0:v]" + ",".join(video_filters) + "[vout]"
 
-    cmd2 = ["-threads", "1", "-i", temp_nofx] # input 0 = video + Kokoro
-
-    filter_parts = [f"[0:v]{','.join(video_filters)}"]
+    cmd2 = ["-threads", "1", "-i", temp_nofx]  # input 0 = downscaled video + narration/bed audio
+    filter_parts = [video_fc]
 
     if music_path:
-        fade_out_start = max(0.0, nofx_dur - 3.0)
-        cmd2.extend(["-i", music_path]) # input 1 = music
-        # Lower music, fade out, then mix with Kokoro audio from video
+        fade_out_start = max(0.0, total - 3.0)
+        cmd2.extend([
+            "-thread_queue_size", "512",
+            "-stream_loop", "-1",
+            "-i", music_path,
+        ])
+        # music is input 1; use 1:a explicitly (mp3 may carry a cover-image stream)
         filter_parts.append(
-            f"[1:a]volume={music_volume},afade=t=out:st={fade_out_start}:d=3[a_music]"
+            f"[1:a]volume={music_volume},afade=t=in:d=2,"
+            f"afade=t=out:st={fade_out_start:.2f}:d=3[music]"
         )
         filter_parts.append(
-            "[0:a][a_music]amix=inputs=2:duration=shortest:dropout_transition=3"
+            "[music][0:a]sidechaincompress=threshold=0.03:ratio=6:attack=10:release=400[mducked]"
         )
-        map_args = ["-map", "", "-map", ""]
-        audio_args = ["-c:a", "aac", "-b:a", "128k"]
+        # Narration ([0:a]) FIRST in amix — duration=first must anchor on
+        # narration, not on the (potentially short, looped) music bed. With
+        # music as the first input, a music track shorter than the video
+        # truncated the ENTIRE render down to the music's length.
+        filter_parts.append(
+            "[0:a][mducked]amix=inputs=2:duration=first:normalize=0[aout]"
+        )
+        audio_map = "[aout]"
     else:
-        # No music, just pass through Kokoro audio
-        filter_parts.append("[0:a]anull")
-        map_args = ["-map", "", "-map", ""]
-        audio_args = ["-c:a", "aac", "-b:a", "128k"]
-
-    final_filter = ";".join(filter_parts)
+        audio_map = "0:a"
 
     cmd2.extend([
-        "-filter_complex", final_filter,
-        *map_args,
+        "-filter_complex", ";".join(filter_parts),
+        "-map", "[vout]",
+        "-map", audio_map,
+        # Explicit hard cap at the base video's real duration — belt-and-
+        # suspenders alongside -shortest, so no audio-duration accounting
+        # quirk (looped/ducked/mixed streams) can inflate or truncate output.
+        "-t", f"{total:.3f}",
+        "-shortest",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
         "-x264-params", "pools=1",
-        *audio_args,
-        "-shortest", # cut music to video length
+        "-c:a", "aac", "-b:a", "128k",
         "-max_muxing_queue_size", "1024",
+        "-movflags", "+faststart",
         dest,
     ])
-
     await ffmpeg(cmd2)
 
     if os.path.exists(temp_nofx):

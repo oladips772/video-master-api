@@ -27,16 +27,16 @@ from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_d
 
 logger = logging.getLogger(__name__)
 
-TAIL_PAD_SEC = 0.4
+TAIL_PAD_SEC = 0.6  # was 0.4 — wider margin so retime/trim rounding can't clip narration
 # Safety net for the rare segment where even 25% footage headroom in
 # clips.py isn't enough — allow slow-mo up to 1.25x before the freeze
 # fallback kicks in. Still imperceptible to viewers.
 MAX_SLOW_FACTOR = 1.25
-# 0.3s of slack tolerates rounding without letting per-segment overshoot
+# 0.35s of slack tolerates rounding without letting per-segment overshoot
 # accumulate as caption-vs-video drift (previously 1.5s → ~1s per segment
 # could survive un-trimmed, adding tens of seconds of drift over a 40+
 # segment recap).
-TRIM_SLACK_SEC = 0.3
+TRIM_SLACK_SEC = 0.35  # was 0.3
 SPEED_MAX = 1.25
 
 # Kokoro voice ids look like af_alloy / am_echo / bf_emma; anything else is
@@ -121,13 +121,20 @@ async def _trim_leading_silence(audio_path: str) -> None:
     the original movie audio playing for that beat before narration kicks in
     — the "narration starts a little slow" symptom. silenceremove trims it
     in place; running it a second time on already-trimmed audio is a no-op.
+
+    -50dB (was -40dB) is less aggressive — soft word onsets can fall below
+    -40dB and get wrongly stripped as silence, clipping the actual start of
+    the narration. -50dB only catches genuine silence. adelay=40|40 pads 40ms
+    of silence back before speech as a safety buffer against the trim being
+    slightly too tight.
     """
     tmp = audio_path + ".trim.mp3"
     await ffmpeg(
         [
             "-i", audio_path,
             "-af",
-            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-40dB",
+            "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,"
+            "adelay=40|40",
             tmp,
         ]
     )
