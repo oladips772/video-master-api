@@ -408,12 +408,16 @@ async def _extract_and_concat(
                 for p in sub_paths:
                     f.write(f"file '{p}'\n")
 
+            # Stream-copy: every sub-clip came from _encode_clip moments earlier
+            # with identical codec/resolution/fps/pix_fmt and already-clean
+            # zero-based PTS (setpts=PTS-STARTPTS applied per sub-clip at
+            # extraction), so the concat demuxer can staple them without a
+            # second full-segment re-encode.
             await ffmpeg(
                 [
                     "-f", "concat", "-safe", "0", "-fflags", "+genpts",
                     "-i", concat_list,
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                    "-c:a", "aac", "-ar", "44100", "-ac", "2",
+                    "-c", "copy",
                     "-movflags", "+faststart",
                     seg["clip_path"],
                 ]

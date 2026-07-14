@@ -284,6 +284,10 @@ async def _final_encode(
     temp_nofx = os.path.join(os.path.dirname(dest), "final_nofx.mp4")
 
     # ===== PASS 1: downscale video, KEEP the narration/bed audio =====
+    # ultrafast: this output is re-encoded again by pass 2 moments later, so
+    # pass 1's only job is dimension/timeline normalization — no quality is
+    # lost by using the fastest preset here, same principle as the full-concat
+    # step above.
     cmd1 = [
         "-threads", "1",
         "-fflags", "+genpts",
@@ -291,7 +295,7 @@ async def _final_encode(
         "-vf", "scale=1280:720,format=yuv420p",
         "-r", "24",
         "-fps_mode", "cfr",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26",
         "-x264-params", "pools=1",
         "-c:a", "aac", "-b:a", "96k",
         "-max_muxing_queue_size", "1024",
