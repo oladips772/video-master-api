@@ -451,6 +451,7 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "-f", "concat", "-safe", "0", "-fflags", "+genpts", "-i", concat_list,
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
         "-r", "24", "-vsync", "cfr",
+        "-af", "aresample=async=1:first_pts=0",
         "-c:a", "aac", "-ar", "44100", "-ac", "2",
         "-threads", "1",
         base_video,
