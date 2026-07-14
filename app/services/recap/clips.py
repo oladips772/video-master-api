@@ -195,30 +195,94 @@ def _pick_subclips(
 #     return {"vf": vf, "af": af, "summary": summary}
 
 def build_distortion_filter() -> Optional[Dict[str, str]]:
-    """Return a per-sub-clip distortion recipe: crop + handheld shake only."""
+    """Return a subtle per-sub-clip distortion recipe: crop + handheld shake."""
     if os.getenv("RECAP_DISTORTION_ENABLED", "1") != "1":
         return None
 
     import random
 
-    crop_pct = 0.96
     out_w = 1280
     out_h = 720
-    crop_w = int(out_w * crop_pct)  # 1228
-    crop_h = int(out_h * crop_pct)  # 691
-    shake_px = random.uniform(10.0, 18.0)
 
-    # Only crop + random offset. No zoompan, no t, no sin
-    # random(0) gives new value every frame = handheld shake
+    # Crop only 2% to leave room for the shake.
+    crop_pct = 0.98
+    crop_w = int(out_w * crop_pct)
+    crop_h = int(out_h * crop_pct)
+
+    # Very subtle handheld shake.
+    shake_px = random.uniform(2.0, 4.0)
+
     vf = (
-        f"crop={crop_w}:{crop_h}:(iw-{crop_w})/2+random(0)*{shake_px:.1f}:(ih-{crop_h})/2+random(0)*{shake_px:.1f},"
+        f"crop={crop_w}:{crop_h}:"
+        f"(iw-{crop_w})/2+random(0)*{shake_px:.1f}:"
+        f"(ih-{crop_h})/2+random(0)*{shake_px:.1f},"
         f"scale={out_w}:{out_h}:flags=lanczos"
     )
-    
-    af = "anull"
-    summary = f"crop=96% shake={shake_px:.0f}px"
 
-    return {"vf": vf, "af": af, "summary": summary}
+    return {
+        "vf": vf,
+        "summary": f"crop=98% shake={shake_px:.1f}px",
+    }
+
+# working encode before chatgpt gave me
+# async def _encode_clip(
+#     ctx: Dict[str, Any],
+#     start: float,
+#     end: float,
+#     dest: str,
+#     vf: str,
+#     label: Optional[str] = None,
+# ) -> None:
+#     """Cut [start, end] from the source and re-encode to mezzanine specs,
+#     optionally prepending a random distortion filter for Content-ID variety.
+
+#     Seek is INPUT-side (-ss before -i) for speed, paired with a DURATION-based
+#     cut (-t, not -to) so the read length can't be misread as an absolute
+#     position in the original timeline. setpts=PTS-STARTPTS / asetpts=PTS-STARTPTS
+#     are appended as the LAST filter on each stream so every sub-clip's encoded
+#     frames start at PTS 0 regardless of how far into the movie they were cut
+#     from — without this reset, frames cut from e.g. the 45-minute mark can keep
+#     PTS values around 2700s, which is what inflated concatenated durations to
+#     8x actual length.
+#     """
+#     settings = ctx["payload"]["settings"]
+#     distortion = build_distortion_filter()
+#     duration = end - start
+
+#     if distortion:
+#         video_filters = f"{distortion['vf']},{vf},setpts=PTS-STARTPTS"
+#         # Distortion recipes without a speed change (af=None) skip atempo —
+#         # asetpts alone still resets audio PTS to 0.
+#         audio_filters = (
+#             f"{distortion['af']},asetpts=PTS-STARTPTS"
+#             if distortion.get("af")
+#             else "asetpts=PTS-STARTPTS"
+#         )
+#     else:
+#         video_filters = f"{vf},setpts=PTS-STARTPTS"
+#         audio_filters = "asetpts=PTS-STARTPTS"
+
+#     args = [
+#         "-ss", f"{start:.3f}",
+#         "-i", ctx["movie_path"],
+#         "-t", f"{duration:.3f}",
+#         "-vf", video_filters,
+#         "-af", audio_filters,
+#         "-r", str(settings["fps"]),
+#         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+#         "-c:a", "aac", "-ar", "44100", "-ac", "2",
+#         "-movflags", "+faststart",
+#         dest,
+#     ]
+
+#     await ffmpeg(args)
+
+#     if distortion and label:
+#         logger.info(
+#             "%s: %.1f-%.1fs | distortion applied: %s",
+#             label, start, end, distortion["summary"],
+#         )
+
 
 async def _encode_clip(
     ctx: Dict[str, Any],
@@ -228,44 +292,32 @@ async def _encode_clip(
     vf: str,
     label: Optional[str] = None,
 ) -> None:
-    """Cut [start, end] from the source and re-encode to mezzanine specs,
-    optionally prepending a random distortion filter for Content-ID variety.
+    """Cut [start, end] from the source and re-encode to mezzanine specs.
 
-    Seek is INPUT-side (-ss before -i) for speed, paired with a DURATION-based
-    cut (-t, not -to) so the read length can't be misread as an absolute
-    position in the original timeline. setpts=PTS-STARTPTS / asetpts=PTS-STARTPTS
-    are appended as the LAST filter on each stream so every sub-clip's encoded
-    frames start at PTS 0 regardless of how far into the movie they were cut
-    from — without this reset, frames cut from e.g. the 45-minute mark can keep
-    PTS values around 2700s, which is what inflated concatenated durations to
-    8x actual length.
+    Optionally applies a subtle crop + handheld shake to each clip for
+    Content-ID variation. The original movie audio is discarded because
+    narration and background music are added during the final encode.
     """
+
     settings = ctx["payload"]["settings"]
     distortion = build_distortion_filter()
     duration = end - start
 
     if distortion:
         video_filters = f"{distortion['vf']},{vf},setpts=PTS-STARTPTS"
-        # Distortion recipes without a speed change (af=None) skip atempo —
-        # asetpts alone still resets audio PTS to 0.
-        audio_filters = (
-            f"{distortion['af']},asetpts=PTS-STARTPTS"
-            if distortion.get("af")
-            else "asetpts=PTS-STARTPTS"
-        )
     else:
         video_filters = f"{vf},setpts=PTS-STARTPTS"
-        audio_filters = "asetpts=PTS-STARTPTS"
 
     args = [
         "-ss", f"{start:.3f}",
         "-i", ctx["movie_path"],
         "-t", f"{duration:.3f}",
         "-vf", video_filters,
-        "-af", audio_filters,
+        "-an",  # Drop the original movie audio
         "-r", str(settings["fps"]),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-        "-c:a", "aac", "-ar", "44100", "-ac", "2",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "20",
         "-movflags", "+faststart",
         dest,
     ]
@@ -275,9 +327,11 @@ async def _encode_clip(
     if distortion and label:
         logger.info(
             "%s: %.1f-%.1fs | distortion applied: %s",
-            label, start, end, distortion["summary"],
+            label,
+            start,
+            end,
+            distortion["summary"],
         )
-
 
 async def _extract_and_concat(
     ctx: Dict[str, Any],
