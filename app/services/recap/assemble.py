@@ -271,7 +271,7 @@ async def _fetch_music(ctx: Dict[str, Any]) -> Optional[str]:
 async def _final_encode(
     ctx: Dict[str, Any], base: str, ass_path: Optional[str], dest: str
 ) -> None:
-    """Two-pass to avoid OOM: 1) downscale video only, 2) captions+watermark+music."""
+    """Two-pass to avoid OOM: 1) downscale + keep audio, 2) captions+watermark+music mix."""
     import os
     settings = ctx["payload"]["settings"]
     music_path = await _fetch_music(ctx)
@@ -279,7 +279,7 @@ async def _final_encode(
     total = await media_duration(base) or 0.0
     temp_nofx = os.path.join(os.path.dirname(dest), "final_nofx.mp4")
 
-    # ===== PASS 1: downscale video only, clean CFR timeline =====
+    # ===== PASS 1: downscale video + KEEP AUDIO for Kokoro =====
     cmd1 = [
         "-threads", "1",
         "-fflags", "+genpts",
@@ -289,8 +289,8 @@ async def _final_encode(
         "-fps_mode", "cfr",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
         "-x264-params", "pools=1",
+        "-c:a", "aac", "-b:a", "96k", # KEEP AUDIO
         "-max_muxing_queue_size", "1024",
-        "-an",
         temp_nofx,
     ]
     await ffmpeg(cmd1)
@@ -302,7 +302,7 @@ async def _final_encode(
             f"pass 1 duration ballooned to {nofx_dur:.0f}s (source {total:.0f}s)"
         )
 
-    # ===== PASS 2: captions + watermark + music - SINGLE filter_complex =====
+    # ===== PASS 2: captions + watermark + mix Kokoro + Music =====
     video_filters = []
     if ass_path and os.path.exists(ass_path):
         safe_ass = ass_path.replace(":", r"\:").replace("'", r"\'")
@@ -315,29 +315,27 @@ async def _final_encode(
         "boxborderw=8:x=w-tw-24:y=h-th-24"
     )
 
-    # Build ONE filter_complex for both video and audio
-    filter_parts = []
-    filter_parts.append(f"[0:v]{','.join(video_filters)}[vout]")
+    cmd2 = ["-threads", "1", "-i", temp_nofx] # input 0 = video + Kokoro
 
-    cmd2 = [
-        "-threads", "1",
-        "-i", temp_nofx, # input 0
-    ]
+    filter_parts = [f"[0:v]{','.join(video_filters)}"]
 
     if music_path:
         fade_out_start = max(0.0, nofx_dur - 3.0)
-        cmd2.extend(["-i", music_path]) # input 1
-        # Music volume + fade + mix with original audio
+        cmd2.extend(["-i", music_path]) # input 1 = music
+        # Lower music, fade out, then mix with Kokoro audio from video
         filter_parts.append(
             f"[1:a]volume={music_volume},afade=t=out:st={fade_out_start}:d=3[a_music]"
         )
         filter_parts.append(
-            "[0:a][a_music]amix=inputs=2:duration=shortest:dropout_transition=3[aout]"
+            "[0:a][a_music]amix=inputs=2:duration=shortest:dropout_transition=3"
         )
-        map_args = ["-map", "[vout]", "-map", "[aout]"]
+        map_args = ["-map", "", "-map", ""]
+        audio_args = ["-c:a", "aac", "-b:a", "128k"]
     else:
-        filter_parts.append("[0:a]anull[aout]")
-        map_args = ["-map", "[vout]", "-map", "[aout]"]
+        # No music, just pass through Kokoro audio
+        filter_parts.append("[0:a]anull")
+        map_args = ["-map", "", "-map", ""]
+        audio_args = ["-c:a", "aac", "-b:a", "128k"]
 
     final_filter = ";".join(filter_parts)
 
@@ -346,8 +344,8 @@ async def _final_encode(
         *map_args,
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
         "-x264-params", "pools=1",
-        "-c:a", "aac", "-b:a", "128k",
-        "-shortest", # music cuts to video length
+        *audio_args,
+        "-shortest", # cut music to video length
         "-max_muxing_queue_size", "1024",
         dest,
     ])
@@ -356,7 +354,6 @@ async def _final_encode(
 
     if os.path.exists(temp_nofx):
         os.remove(temp_nofx)
-
 
 # async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
 #     payload = ctx["payload"]
