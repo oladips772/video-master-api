@@ -171,16 +171,107 @@ async def _fetch_music(ctx: Dict[str, Any]) -> Optional[str]:
         )
         return None
 
+# working code from claude
+# async def _final_encode(
+#     ctx: Dict[str, Any], base: str, ass_path: Optional[str], dest: str
+# ) -> None:
+#     """Two-pass to avoid OOM: 1) downscale video only, 2) captions+watermark+music.
 
+#     base is the already-concatenated MP4 (recap_concat.mp4), read as a normal
+#     input (NOT the concat demuxer). The ffmpeg() helper prepends
+#     ["ffmpeg","-hide_banner","-y"], so command lists start with the first real arg.
+#     """
+#     import os
+#     settings = ctx["payload"]["settings"]
+#     music_path = await _fetch_music(ctx)
+#     music_volume = settings.get("background_music_volume", 0.07)
+#     total = await media_duration(base) or 0.0
+#     temp_nofx = os.path.join(os.path.dirname(dest), "final_nofx.mp4")
+
+#     # ===== PASS 1: downscale video only, clean CFR timeline =====
+#     cmd1 = [
+#         "-threads", "1",
+#         "-fflags", "+genpts",
+#         "-i", base,
+#         "-vf", "scale=1280:720,format=yuv420p",
+#         "-r", "24",
+#         "-fps_mode", "cfr",
+#         "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+#         "-x264-params", "pools=1",
+#         "-max_muxing_queue_size", "1024",
+#         "-an",
+#         temp_nofx,
+#     ]
+#     await ffmpeg(cmd1)
+
+#     # ===== SANITY GUARD: fail fast if pass 1 ballooned =====
+#     nofx_dur = await media_duration(temp_nofx) or 0.0
+#     if nofx_dur > max(total * 1.5, 1800.0):
+#         raise RuntimeError(
+#             f"pass 1 duration ballooned to {nofx_dur:.0f}s (source {total:.0f}s) "
+#             f"— aborting before the expensive pass 2"
+#         )
+
+#     # ===== PASS 2: captions + watermark + music (single filter_complex) =====
+#     video_chain = []
+#     if ass_path and os.path.exists(ass_path):
+#         # Escape : and ' so ffmpeg doesn't break
+#         safe_ass = ass_path.replace(":", r"\:").replace("'", r"\'")
+#         video_chain.append(
+#             f"subtitles={safe_ass}:force_style='FontName=Arial,FontSize=56'"
+#         )
+
+#     video_chain.append(
+#         "drawtext=text='Wonder Recap':fontcolor=white@0.85:box=1:boxcolor=black@0.4:"
+#         "boxborderw=8:x=w-tw-24:y=h-th-24"
+#     )
+
+#     # Use -filter_complex only if we have multiple filters, else -vf
+#     if len(video_chain) > 1:
+#         video_fc = "[0:v]" + ",".join(video_chain) + "[vout]"
+#         vf_args = ["-filter_complex", video_fc, "-map", "[vout]"]
+#     else:
+#         vf_args = ["-vf", video_chain[0]]
+
+#     cmd2 = [
+#         "-threads", "1",
+#         "-i", temp_nofx,
+#     ] + vf_args
+
+#     # Add music if present
+#     if music_path:
+#         fade_out_start = max(0.0, nofx_dur - 3.0)
+#         cmd2.extend([
+#             "-i", music_path,
+#             "-filter_complex", f"[1:a]volume={music_volume},afade=t=out:st={fade_out_start}:d=3[a1]",
+#             "-map", "[vout]" if len(video_chain) > 1 else "0:v",
+#             "-map", "[a1]",
+#             "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+#             "-x264-params", "pools=1",
+#             "-c:a", "aac", "-b:a", "128k",
+#             "-shortest",
+#             "-max_muxing_queue_size", "1024",
+#             dest,
+#         ])
+#     else:
+#         cmd2.extend([
+#             "-an",
+#             "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+#             "-x264-params", "pools=1",
+#             "-max_muxing_queue_size", "1024",
+#             dest,
+#         ])
+
+#     await ffmpeg(cmd2)
+
+#     if os.path.exists(temp_nofx):
+#         os.remove(temp_nofx)
+
+# meta ai code
 async def _final_encode(
     ctx: Dict[str, Any], base: str, ass_path: Optional[str], dest: str
 ) -> None:
-    """Two-pass to avoid OOM: 1) downscale video only, 2) captions+watermark+music.
-
-    base is the already-concatenated MP4 (recap_concat.mp4), read as a normal
-    input (NOT the concat demuxer). The ffmpeg() helper prepends
-    ["ffmpeg","-hide_banner","-y"], so command lists start with the first real arg.
-    """
+    """Two-pass to avoid OOM: 1) downscale video only, 2) captions+watermark+music."""
     import os
     settings = ctx["payload"]["settings"]
     music_path = await _fetch_music(ctx)
@@ -204,63 +295,62 @@ async def _final_encode(
     ]
     await ffmpeg(cmd1)
 
-    # ===== SANITY GUARD: fail fast if pass 1 ballooned =====
+    # ===== SANITY GUARD =====
     nofx_dur = await media_duration(temp_nofx) or 0.0
     if nofx_dur > max(total * 1.5, 1800.0):
         raise RuntimeError(
-            f"pass 1 duration ballooned to {nofx_dur:.0f}s (source {total:.0f}s) "
-            f"— aborting before the expensive pass 2"
+            f"pass 1 duration ballooned to {nofx_dur:.0f}s (source {total:.0f}s)"
         )
 
-    # ===== PASS 2: captions + watermark + music (single filter_complex) =====
-    video_chain = []
+    # ===== PASS 2: captions + watermark + music - SINGLE filter_complex =====
+    video_filters = []
     if ass_path and os.path.exists(ass_path):
-        # Escape : and ' so ffmpeg doesn't break
         safe_ass = ass_path.replace(":", r"\:").replace("'", r"\'")
-        video_chain.append(
+        video_filters.append(
             f"subtitles={safe_ass}:force_style='FontName=Arial,FontSize=56'"
         )
 
-    video_chain.append(
+    video_filters.append(
         "drawtext=text='Wonder Recap':fontcolor=white@0.85:box=1:boxcolor=black@0.4:"
         "boxborderw=8:x=w-tw-24:y=h-th-24"
     )
 
-    # Use -filter_complex only if we have multiple filters, else -vf
-    if len(video_chain) > 1:
-        video_fc = "[0:v]" + ",".join(video_chain) + "[vout]"
-        vf_args = ["-filter_complex", video_fc, "-map", "[vout]"]
-    else:
-        vf_args = ["-vf", video_chain[0]]
+    # Build ONE filter_complex for both video and audio
+    filter_parts = []
+    filter_parts.append(f"[0:v]{','.join(video_filters)}[vout]")
 
     cmd2 = [
         "-threads", "1",
-        "-i", temp_nofx,
-    ] + vf_args
+        "-i", temp_nofx, # input 0
+    ]
 
-    # Add music if present
     if music_path:
         fade_out_start = max(0.0, nofx_dur - 3.0)
-        cmd2.extend([
-            "-i", music_path,
-            "-filter_complex", f"[1:a]volume={music_volume},afade=t=out:st={fade_out_start}:d=3[a1]",
-            "-map", "[vout]" if len(video_chain) > 1 else "0:v",
-            "-map", "[a1]",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-            "-x264-params", "pools=1",
-            "-c:a", "aac", "-b:a", "128k",
-            "-shortest",
-            "-max_muxing_queue_size", "1024",
-            dest,
-        ])
+        cmd2.extend(["-i", music_path]) # input 1
+        # Music volume + fade + mix with original audio
+        filter_parts.append(
+            f"[1:a]volume={music_volume},afade=t=out:st={fade_out_start}:d=3[a_music]"
+        )
+        filter_parts.append(
+            "[0:a][a_music]amix=inputs=2:duration=shortest:dropout_transition=3[aout]"
+        )
+        map_args = ["-map", "[vout]", "-map", "[aout]"]
     else:
-        cmd2.extend([
-            "-an",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-            "-x264-params", "pools=1",
-            "-max_muxing_queue_size", "1024",
-            dest,
-        ])
+        filter_parts.append("[0:a]anull[aout]")
+        map_args = ["-map", "[vout]", "-map", "[aout]"]
+
+    final_filter = ";".join(filter_parts)
+
+    cmd2.extend([
+        "-filter_complex", final_filter,
+        *map_args,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-x264-params", "pools=1",
+        "-c:a", "aac", "-b:a", "128k",
+        "-shortest", # music cuts to video length
+        "-max_muxing_queue_size", "1024",
+        dest,
+    ])
 
     await ffmpeg(cmd2)
 
