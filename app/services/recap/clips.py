@@ -212,12 +212,21 @@ def build_distortion_filter() -> Optional[Dict[str, str]]:
     # Very subtle handheld shake.
     shake_px = random.uniform(2.0, 4.0)
 
+    # vf = (
+    #     f"crop={crop_w}:{crop_h}:"
+    #     f"(iw-{crop_w})/2+random(0)*{shake_px:.1f}:"
+    #     f"(ih-{crop_h})/2+random(0)*{shake_px:.1f},"
+    #     f"scale={out_w}:{out_h}:flags=lanczos"
+    # )
+
     vf = (
-        f"crop={crop_w}:{crop_h}:"
-        f"(iw-{crop_w})/2+random(0)*{shake_px:.1f}:"
-        f"(ih-{crop_h})/2+random(0)*{shake_px:.1f},"
-        f"scale={out_w}:{out_h}:flags=lanczos"
-    )
+    f"crop="
+    f"trunc(iw*0.98/2)*2:"
+    f"trunc(ih*0.98/2)*2:"
+    f"(iw-trunc(iw*0.98/2)*2)/2+random(0)*{shake:.1f}:"
+    f"(ih-trunc(ih*0.98/2)*2)/2+random(0)*{shake:.1f},"
+    "scale=1280:720:flags=lanczos"
+)
 
     return {
         "vf": vf,
