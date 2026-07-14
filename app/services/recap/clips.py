@@ -194,6 +194,45 @@ def _pick_subclips(
 #     )
 #     return {"vf": vf, "af": af, "summary": summary}
 
+# def build_distortion_filter() -> Optional[Dict[str, str]]:
+#     """Return a subtle per-sub-clip distortion recipe: crop + handheld shake."""
+#     if os.getenv("RECAP_DISTORTION_ENABLED", "1") != "1":
+#         return None
+
+#     import random
+
+#     out_w = 1280
+#     out_h = 720
+
+#     # Crop only 2% to leave room for the shake.
+#     crop_pct = 0.98
+#     crop_w = int(out_w * crop_pct)
+#     crop_h = int(out_h * crop_pct)
+
+#     # Very subtle handheld shake.
+#     shake_px = random.uniform(2.0, 4.0)
+
+#     # vf = (
+#     #     f"crop={crop_w}:{crop_h}:"
+#     #     f"(iw-{crop_w})/2+random(0)*{shake_px:.1f}:"
+#     #     f"(ih-{crop_h})/2+random(0)*{shake_px:.1f},"
+#     #     f"scale={out_w}:{out_h}:flags=lanczos"
+#     # )
+
+#     vf = (
+#     f"crop="
+#     f"trunc(iw*0.98/2)*2:"
+#     f"trunc(ih*0.98/2)*2:"
+#     f"(iw-trunc(iw*0.98/2)*2)/2+random(0)*{shake:.1f}:"
+#     f"(ih-trunc(ih*0.98/2)*2)/2+random(0)*{shake:.1f},"
+#     "scale=1280:720:flags=lanczos"
+# )
+
+#     return {
+#         "vf": vf,
+#         "summary": f"crop=98% shake={shake_px:.1f}px",
+#     }
+
 def build_distortion_filter() -> Optional[Dict[str, str]]:
     """Return a subtle per-sub-clip distortion recipe: crop + handheld shake."""
     if os.getenv("RECAP_DISTORTION_ENABLED", "1") != "1":
@@ -201,36 +240,21 @@ def build_distortion_filter() -> Optional[Dict[str, str]]:
 
     import random
 
-    out_w = 1280
-    out_h = 720
-
-    # Crop only 2% to leave room for the shake.
     crop_pct = 0.98
-    crop_w = int(out_w * crop_pct)
-    crop_h = int(out_h * crop_pct)
-
-    # Very subtle handheld shake.
     shake_px = random.uniform(2.0, 4.0)
 
-    # vf = (
-    #     f"crop={crop_w}:{crop_h}:"
-    #     f"(iw-{crop_w})/2+random(0)*{shake_px:.1f}:"
-    #     f"(ih-{crop_h})/2+random(0)*{shake_px:.1f},"
-    #     f"scale={out_w}:{out_h}:flags=lanczos"
-    # )
-
     vf = (
-    f"crop="
-    f"trunc(iw*0.98/2)*2:"
-    f"trunc(ih*0.98/2)*2:"
-    f"(iw-trunc(iw*0.98/2)*2)/2+random(0)*{shake:.1f}:"
-    f"(ih-trunc(ih*0.98/2)*2)/2+random(0)*{shake:.1f},"
-    "scale=1280:720:flags=lanczos"
-)
+        f"crop="
+        f"trunc(iw*{crop_pct}/2)*2:"
+        f"trunc(ih*{crop_pct}/2)*2:"
+        f"(iw-trunc(iw*{crop_pct}/2)*2)/2+(random(0)-0.5)*{shake_px:.1f}:"
+        f"(ih-trunc(ih*{crop_pct}/2)*2)/2+(random(0)-0.5)*{shake_px:.1f},"
+        "scale=1280:720:flags=lanczos"
+    )
 
     return {
         "vf": vf,
-        "summary": f"crop=98% shake={shake_px:.1f}px",
+        "summary": f"crop={crop_pct*100:.0f}% shake={shake_px:.1f}px",
     }
 
 # working encode before chatgpt gave me
