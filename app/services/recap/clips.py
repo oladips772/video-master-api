@@ -241,7 +241,8 @@ def build_distortion_filter() -> Optional[Dict[str, str]]:
     import random
 
     crop_pct = 0.98
-    shake_px = random.uniform(0.5, 1)
+    # shake_px = random.uniform(0.5, 1.1)
+    shake_px = random.uniform(0.3, 0.6)
     # shake_px = random.uniform(0.3, 0.8)
 
     vf = (
