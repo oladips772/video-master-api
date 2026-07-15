@@ -22,6 +22,7 @@ import json
 
 from app.services.kie_ai import kie_ai_service, KieAiError
 from app.services.audio.text_to_speech import generate_speech
+from app.services.recap.deliver import report_progress
 from app.services.video.concatenate import concatenate_videos
 from app.services.video.add_audio import add_audio_service
 from app.utils.storage import storage_manager
@@ -229,9 +230,10 @@ class RenderService:
             # Recreate temp dir in case a previous run cleaned it up (e.g. on retry)
             os.makedirs(job.temp_dir, exist_ok=True)
             channel = job.render_params.get("channel", "kenburns")
-            
+
             logger.info(f"Starting render job {job.job_id} with channel {channel}")
-            
+            await report_progress(job.render_params, "start", "Starting render", 2, "Starting render")
+
             # Process scenes in parallel batches
             await self._process_scenes_batched(job, channel)
             
@@ -325,8 +327,20 @@ class RenderService:
             job.scenes[scene_num]["video_path"] = assembled_path
             job.scenes[scene_num]["video_url"] = video_url
             job.completed_scenes += 1
-            
+
             logger.info(f"Scene {scene_num} completed successfully")
+
+            total_scenes = len(job.scenes)
+            overall_percent = 5 + (80 * job.completed_scenes / total_scenes)
+            await report_progress(
+                job.render_params,
+                "render_scenes",
+                "Rendering scenes",
+                overall_percent,
+                f"Rendering scene ({job.completed_scenes}/{total_scenes})",
+                current=job.completed_scenes,
+                total=total_scenes,
+            )
         
         except Exception as e:
             logger.error(f"Error processing scene {scene_num}: {e}")
@@ -725,6 +739,9 @@ class RenderService:
         concat_temp_dir = None
         try:
             logger.info(f"Assembling final video from {len(job.scenes)} scenes")
+            await report_progress(
+                job.render_params, "assemble", "Assembling video", 85, "Assembling final video"
+            )
 
             # Get video URLs in scene order
             video_urls = [
@@ -748,6 +765,10 @@ class RenderService:
             final_local_path = result.get("local_path") or result.get("path")
             final_url = result.get("url")
             concat_temp_dir = result.get("_temp_dir")
+
+            await report_progress(
+                job.render_params, "upload", "Uploading", 95, "Uploading finished video"
+            )
 
             # Add background music if provided
             bg_music_url = settings.get("background_music")

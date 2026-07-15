@@ -128,6 +128,7 @@ async def start_render_job(request: RenderRequest):
             "project_name": request.project_name,
             "channel": request.channel,
             "webhook_url": request.webhook_url,
+            "progress_url": request.progress_url,
             "voice_id": request.voice_id,
             "voice_speed": request.voice_speed,
             "settings": request.settings.dict(exclude_none=True),

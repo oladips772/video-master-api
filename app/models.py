@@ -921,6 +921,10 @@ class RenderRequest(BaseModel):
         default=None,
         description="Optional webhook URL to POST status updates to when rendering completes"
     )
+    progress_url: Optional[AnyUrl] = Field(
+        default=None,
+        description="Optional URL to POST interim progress pings (step/percent/message) to while rendering. Best-effort — never blocks or fails the render if unreachable."
+    )
     voice_id: Optional[str] = Field(
         default=None,
         description="Top-level voice ID used as a fallback when a scene omits voice_id. Scene-level voice_id still wins."
