@@ -84,6 +84,16 @@ async def media_duration(path: str) -> Optional[float]:
         return None
 
 
+async def has_audio_stream(path: str) -> bool:
+    """Check whether a media file has at least one audio stream."""
+    try:
+        info = await ffprobe_json(path)
+    except RuntimeError:
+        return False
+    streams = info.get("streams", [])
+    return any(s.get("codec_type") == "audio" for s in streams)
+
+
 # --- Downloads ---
 
 

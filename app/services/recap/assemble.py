@@ -30,6 +30,7 @@ from app.services.recap.deliver import report_progress
 from app.services.recap.utils import (
     download_url,
     ffmpeg,
+    has_audio_stream,
     media_duration,
     save_ctx,
     scratch_dir,
@@ -77,6 +78,18 @@ async def _mux_segment(seg: Dict[str, Any], original_volume: float, dest: str) -
     sidechaincompress. If original_volume <= 0, drop the movie audio entirely.
     """
     original_volume = min(max(float(original_volume), 0.0), ORIGINAL_VOLUME_CAP)
+
+    # Extracted clips currently have no audio stream (clips.py drops it with
+    # -an at extraction). Referencing [0:a] on an audio-less clip crashes
+    # FFmpeg with "Stream specifier ':a' ... matches no streams" — fall back
+    # to the narration-only path instead of hard-failing the render.
+    clip_has_audio = await has_audio_stream(seg["clip_path"])
+    if not clip_has_audio and original_volume > 0.0:
+        logger.debug(
+            "seg %s: clip has no audio stream, ignoring original_audio_volume=%.2f",
+            seg["id"], original_volume,
+        )
+        original_volume = 0.0
 
     if original_volume <= 0.0:
         # Fully muted: narration only, still boosted.
