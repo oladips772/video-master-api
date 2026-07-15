@@ -22,6 +22,7 @@ import json
 
 from app.services.kie_ai import kie_ai_service, KieAiError
 from app.services.audio.text_to_speech import generate_speech
+from app.services import job_markers
 from app.services.recap.deliver import report_progress
 from app.services.video.concatenate import concatenate_videos
 from app.services.video.add_audio import add_audio_service
@@ -82,8 +83,9 @@ class RenderJob:
         self.job_id = job_id
         self.render_params = render_params
         self.temp_dir = os.path.join(TEMP_BASE_DIR, job_id)
-        self.status = "pending"  # pending, processing, completed, failed
+        self.status = "pending"  # pending, processing, completed, failed, cancelled
         self.error = None
+        self.cancelled = False  # cooperative cancel flag, checked between scenes/steps
         self.scenes: Dict[int, Dict[str, Any]] = {}  # Track per-scene state
         self.completed_scenes = 0
         self.failed_scenes = 0
@@ -150,12 +152,51 @@ class RenderService:
         """
         job = RenderJob(job_id, render_params)
         self.jobs[job_id] = job
-        
+
+        # Marker for startup reconciliation — if this process dies before the
+        # job reaches a terminal state, the next startup notifies webhook_url
+        # instead of leaving the caller's project stuck at "rendering" forever.
+        job_markers.write_marker(
+            job_id,
+            "render_multi_scene",
+            notify_url=render_params.get("webhook_url"),
+            project_id=render_params.get("project_name"),
+        )
+
         # Start processing in background
         asyncio.create_task(self._process_render_job(job))
-        
+
         return job_id
-    
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Cancel an in-progress render job.
+
+        Returns False if the job doesn't exist or has already reached a
+        terminal state — callers should treat that as "already gone".
+
+        Cooperative: sets job.cancelled, checked between scenes/batches and
+        before final assembly. An in-flight scene (image gen / TTS / FFmpeg)
+        is allowed to finish rather than being killed mid-process.
+        """
+        job = self.jobs.get(job_id)
+        if not job:
+            return False
+        if job.status in ("completed", "failed", "cancelled"):
+            return False
+
+        job.cancelled = True
+        job.status = "cancelled"
+        job.error = "Cancelled by user"
+
+        webhook_url = job.render_params.get("webhook_url")
+        await job_markers.notify_terminal(
+            webhook_url, job_id, job.render_params.get("project_name"),
+            "failed", "Cancelled by user",
+        )
+        job_markers.remove_marker(job_id)
+        logger.info(f"Render job {job_id} cancelled by request")
+        return True
+
     async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get the current status of a render job."""
         job = self.jobs.get(job_id)
@@ -236,27 +277,42 @@ class RenderService:
 
             # Process scenes in parallel batches
             await self._process_scenes_batched(job, channel)
-            
+
+            # cancel_job() already set status/error and fired the webhook —
+            # don't let the natural completed/failed branch below clobber it.
+            if job.cancelled:
+                logger.info(f"Render job {job.job_id} stopped: cancelled")
+                return
+
             # After all scenes are done, assemble final video
             if job.failed_scenes == 0:
                 await self._assemble_final_video(job)
+                if job.cancelled:
+                    logger.info(f"Render job {job.job_id} stopped: cancelled during assembly")
+                    return
                 job.status = "completed"
                 logger.info(f"Render job {job.job_id} completed successfully")
             else:
                 job.status = "failed"
                 job.error = f"{job.failed_scenes} scenes failed to render"
                 logger.error(f"Render job {job.job_id} failed: {job.error}")
-            
+
             # Fire webhook if provided
             await self._fire_webhook(job)
-        
+
         except Exception as e:
+            if job.cancelled:
+                # Most likely a step raising because it was interrupted by
+                # cancellation — cancel_job() already notified, don't double-fire.
+                logger.info(f"Render job {job.job_id} raised after cancellation: {e}")
+                return
             logger.error(f"Error processing render job {job.job_id}: {e}")
             job.status = "failed"
             job.error = str(e)
             await self._fire_webhook(job)
-        
+
         finally:
+            job_markers.remove_marker(job.job_id)
             # Cleanup temp files (optional - can be disabled for debugging)
             if os.environ.get("RENDER_CLEANUP", "true").lower() == "true":
                 job.cleanup()
@@ -276,6 +332,10 @@ class RenderService:
         logger.info(f"Scenes to process: {[s.get('scene_number') for s in scenes_to_process]}")
 
         for batch_start in range(0, total, BATCH_SIZE):
+            if job.cancelled:
+                logger.info(f"Render job {job.job_id}: cancelled, stopping before next batch")
+                break
+
             batch = scenes_to_process[batch_start:batch_start + BATCH_SIZE]
 
             logger.info(
@@ -287,11 +347,15 @@ class RenderService:
                 self._process_scene(job, scene, channel)
                 for scene in batch
             ])
-    
+
     async def _process_scene(self, job: RenderJob, scene: Dict[str, Any], channel: str):
         """Process a single scene."""
         scene_num = scene.get("scene_number")
-        
+
+        if job.cancelled:
+            logger.info(f"Scene {scene_num}: skipped, job cancelled")
+            return
+
         try:
             job.scenes[scene_num]["status"] = "processing"
             logger.info(f"Processing scene {scene_num}")

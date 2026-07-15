@@ -8,6 +8,7 @@ import traceback
 from typing import Dict, Optional, List, Any, Callable, Awaitable
 import asyncio
 from app.models import Job, JobStatus, JobType
+from app.services import job_markers
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -97,11 +98,22 @@ class JobQueue:
         
         self.jobs[job_id] = job
         logger.info(f"Created new job {job_id} for operation {job_type.value}")
-        
+
+        # Marker for startup reconciliation — if this process dies before the
+        # job reaches a terminal state, the next startup notifies notify_url
+        # (when the job data carries one, e.g. recap's callback_url) instead
+        # of leaving the caller's project stuck at "rendering" forever.
+        job_markers.write_marker(
+            job_id,
+            job_type.value,
+            notify_url=data.get("callback_url"),
+            project_id=data.get("project_id"),
+        )
+
         # Start processing the job
         task = asyncio.create_task(self._process_job_wrapper(job_id, process_func, data))
         self.processing_tasks[job_id] = task
-        
+
         return job_id
     
     async def _process_job_wrapper(self, job_id: str, process_func: Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any]]], data: Dict[str, Any]):
@@ -126,16 +138,21 @@ class JobQueue:
         try:
             # Process job
             result = await process_func(job_id, data)
-            
+
             # Update job status to completed
             job.status = JobStatus.COMPLETED
             job.result = result
             job.updated_at = datetime.utcnow().isoformat()
             logger.info(f"Job {job_id} processed successfully")
+        except asyncio.CancelledError:
+            # cancel_job() already set status=CANCELLED and fired the
+            # caller's notification before cancelling this task — just log.
+            logger.info(f"Job {job_id} was cancelled")
+            raise
         except Exception as e:
             # Get the full traceback
             tb = traceback.format_exc()
-            
+
             # Update job status to failed
             job.status = JobStatus.FAILED
             job.error = f"{str(e)}\n\nTraceback:\n{tb}"
@@ -145,7 +162,10 @@ class JobQueue:
             # Remove task from processing tasks
             if job_id in self.processing_tasks:
                 del self.processing_tasks[job_id]
-    
+            # Job reached a terminal state (or was cancelled) — no longer
+            # orphan-prone, so drop its startup-reconciliation marker.
+            job_markers.remove_marker(job_id)
+
     async def get_job_info(self, job_id: str) -> Optional[JobInfo]:
         """
         Get job information by ID.
@@ -169,6 +189,44 @@ class JobQueue:
         if not job:
             logger.warning(f"Job {job_id} not found")
         return job
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Cancel an in-progress job.
+
+        Returns False if the job doesn't exist or has already reached a
+        terminal state — callers (the cancel route) should treat that as
+        "already gone", not surface it as an error.
+
+        Cancellation is cooperative: the wrapped asyncio Task is cancelled,
+        which raises CancelledError into the job coroutine the next time it
+        suspends (e.g. recap's per-step check in service.py, or the next
+        `await` inside a long-running step) — an in-flight FFmpeg call is
+        allowed to finish rather than being forcibly killed mid-process.
+        """
+        job = self.jobs.get(job_id)
+        if not job:
+            return False
+        if job.status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
+            return False
+
+        job.status = JobStatus.CANCELLED
+        job.error = "Cancelled by user"
+        job.updated_at = datetime.utcnow().isoformat()
+
+        # Best-effort external notification, reusing the "failed" shape so
+        # existing consumers (Recap Studio) don't need to handle a new status.
+        notify_url = job.params.get("callback_url")
+        await job_markers.notify_terminal(
+            notify_url, job_id, job.params.get("project_id"), "failed", "Cancelled by user"
+        )
+
+        task = self.processing_tasks.get(job_id)
+        if task:
+            task.cancel()
+
+        job_markers.remove_marker(job_id)
+        logger.info(f"Job {job_id} cancelled by request")
+        return True
     
     async def process_job(self, job_id: str, handler: Callable[[Dict[str, Any]], Awaitable[Dict[str, Any]]]):
         """Process a job with the given handler."""

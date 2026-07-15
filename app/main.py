@@ -166,6 +166,15 @@ async def startup_event():
     from app.services.job_queue import job_queue
     logging.info("Job queue initialized with max size: %d", job_queue.max_queue_size)
 
+    # Notify any jobs that were still rendering when this process last
+    # stopped (deploy, crash, OOM-kill) — without this, a render interrupted
+    # by a restart leaves the caller's project stuck at "rendering" forever
+    # with no notification ever sent. Runs before any new job can be created.
+    from app.services.job_markers import reconcile_orphaned_jobs
+    orphaned = await reconcile_orphaned_jobs()
+    if orphaned:
+        logging.warning("Startup reconciliation notified %d orphaned job(s)", orphaned)
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

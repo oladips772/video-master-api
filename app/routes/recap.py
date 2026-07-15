@@ -113,3 +113,22 @@ async def get_recap_status(job_id: str):
         result=job.result,
         error=job.error,
     )
+
+
+@router.post("/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_recap(job_id: str):
+    """Cancel an in-progress recap render job.
+
+    Returns 202 immediately — cancellation is cooperative (the render loop
+    stops between chain steps rather than being killed mid-FFmpeg-call), so
+    it may take a moment to actually stop.
+
+    404 covers both "never existed" and "already finished/gone" (including
+    jobs from before a container restart, since in-memory job state doesn't
+    survive one) — Recap Studio should treat either as "already gone, just
+    reset locally" rather than surfacing an error to the user.
+    """
+    cancelled = await job_queue.cancel_job(job_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found or already finished")
+    return {"job_id": job_id, "status": "cancelled"}

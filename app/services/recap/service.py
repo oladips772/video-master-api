@@ -18,10 +18,13 @@ Any step failure POSTs {status:"error", error:"<step>: <msg>"} to the Recap
 Studio callback and cleans the scratch dir before re-raising so the job is
 marked FAILED with the traceback.
 """
+import asyncio
 import logging
 import os
 from typing import Any, Dict
 
+from app.models import JobStatus
+from app.services.job_queue import job_queue
 from app.services.recap.assemble import assemble
 from app.services.recap.clips import extract_clips
 from app.services.recap.deliver import report_error, report_progress, upload_and_callback
@@ -152,6 +155,19 @@ async def process_recap_job(job_id: str, payload: Dict[str, Any]) -> Dict[str, A
     )
 
     for step_name, step in steps:
+        # Cancellation checkpoint — cancel_job() sets status=CANCELLED
+        # synchronously (and already fired the caller's notification) before
+        # cancelling the underlying asyncio Task, so checking here lets us
+        # stop cleanly between steps without starting more FFmpeg work.
+        # Raising CancelledError (not Exception) skips the except block below
+        # so we don't fire a second, redundant notification.
+        job = job_queue.get_job(job_id)
+        if job and job.status == JobStatus.CANCELLED:
+            logger.info(
+                "job=%s project=%s cancelled before step=%s", job_id, project_id, step_name
+            )
+            raise asyncio.CancelledError(f"cancelled before step={step_name}")
+
         logger.info("job=%s project=%s step=%s", job_id, project_id, step_name)
         step_label, percent, message = STEP_PROGRESS.get(
             step_name, (step_name, 0, step_name)

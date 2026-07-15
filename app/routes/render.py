@@ -260,3 +260,25 @@ async def retry_render_job(job_id: str, request: RenderRetryRequest = None):
             status_code=500,
             detail=f"Failed to retry render job: {str(e)}"
         )
+
+
+@router.post("/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_render_job(job_id: str):
+    """
+    Cancel an in-progress render job.
+
+    Returns 202 immediately — cancellation is cooperative (checked between
+    scenes/batches and before final assembly rather than killing an
+    in-flight FFmpeg call), so it may take a moment to actually stop.
+
+    404 covers both "never existed" and "already finished/gone" (including
+    jobs from before a container restart, since in-memory job state doesn't
+    survive one) — treat either as "already gone, just reset locally".
+    """
+    cancelled = await render_service.cancel_job(job_id)
+    if not cancelled:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Render job {job_id} not found or already finished"
+        )
+    return {"job_id": job_id, "status": "cancelled"}
