@@ -53,7 +53,11 @@ async def _retime_clip(seg: Dict[str, Any], factor: float, freeze_to: Optional[f
     optionally freeze the last frame out to cover the remainder."""
     clip = seg["clip_path"]
     tmp = clip + ".retimed.mp4"
-    vf = f"setpts={factor:.4f}*PTS"
+    # Reset to a zero PTS baseline FIRST, then apply the speed factor — without
+    # the reset, this clip's PTS state (post -c:v copy into mux_XXX.mp4) can
+    # carry a residual offset into the video-only concat, which -fps_mode cfr
+    # then "corrects" with a genuine duplicate-frame freeze.
+    vf = f"setpts=PTS-STARTPTS,setpts={factor:.4f}*PTS"
     af = f"atempo={1 / factor:.4f}"
     if freeze_to is not None:
         vf += f",tpad=stop_mode=clone:stop_duration={freeze_to:.3f}"

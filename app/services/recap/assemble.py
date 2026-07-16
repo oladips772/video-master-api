@@ -458,7 +458,12 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
     video_only = os.path.join(scratch, "recap_video_only.mp4")
     await ffmpeg([
         "-f", "concat", "-safe", "0", "-fflags", "+genpts", "-i", concat_list,
-        "-vf", "scale=1280:720,format=yuv420p",
+        # setpts=PTS-STARTPTS resets to a clean zero baseline LAST, after scale/
+        # format — without it, any residual PTS gap between segments (e.g. from
+        # a retimed clip, see _retime_clip in tts.py) makes -fps_mode cfr paper
+        # over the gap with a genuine duplicate-frame freeze, since video no
+        # longer implicitly absorbs this via a combined video+audio concat.
+        "-vf", "scale=1280:720,format=yuv420p,setpts=PTS-STARTPTS",
         "-an",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
         "-r", "24", "-fps_mode", "cfr",
