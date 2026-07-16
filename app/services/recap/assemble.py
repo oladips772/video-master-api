@@ -71,6 +71,12 @@ def _watermark_filter() -> str:
 NARRATION_GAIN = 1.9
 ORIGINAL_VOLUME_CAP = 0.15
 
+# Short crossfade at every segment-audio splice point in the concat step —
+# short enough to be inaudible as a "fade", long enough to smooth over any
+# hard-cut edge left by trim/reconcile rounding. Video concat is untouched;
+# this only changes how the audio tracks are joined.
+CROSSFADE_SEC = 0.025
+
 
 async def _mux_segment(seg: Dict[str, Any], original_volume: float, dest: str) -> None:
     """Narration is king. Boost narration 1.5x; original movie audio at
@@ -283,15 +289,32 @@ async def _fetch_music(ctx: Dict[str, Any]) -> Optional[str]:
 async def _final_encode(
     ctx: Dict[str, Any], base: str, ass_path: Optional[str], dest: str
 ) -> None:
-    """Single-pass encode: captions+watermark+narration/bed(+music).
+    """Two lighter passes: captions+watermark, then music mix.
+
     base (recap_concat.mp4) is ALREADY 720p with narration/original-audio-bed
-    mixed in (see assemble()'s concat step). No separate downscale pass is
-    needed -- that would be pure duplicate work and reintroduces OOM risk.
+    mixed in (see assemble()'s concat step) — no downscale here, that would
+    be duplicate work and reintroduce OOM risk.
+
+    The single-pass version of this function combined subtitles + drawtext +
+    sidechaincompress + amix in one filter_complex, which OOM'd consistently
+    on long (84-segment, ~13min) renders regardless of -threads — proof it
+    was peak-memory-from-filter-complexity, not a CPU-parallelism problem.
+    Splitting into two passes means neither one ever holds all four heavy
+    filters in memory at once:
+
+      Pass A: captions + watermark only, audio passes through untouched
+              (-c:a copy — cheap, no re-encode).
+      Pass B: music mix only; video passes through via -c:v copy (already
+              correct from Pass A, no re-encode). When there's no music,
+              this degenerates into a cheap stream-copy remux.
     """
     settings = ctx["payload"]["settings"]
     music_path = await _fetch_music(ctx)
     music_volume = settings.get("background_music_volume", 0.07)
     total = await media_duration(base) or 0.0
+
+    # ===== PASS A: captions + watermark, audio untouched =====
+    video_only_captioned = os.path.join(os.path.dirname(dest), "temp_captioned.mp4")
 
     video_filters = []
     if ass_path and os.path.exists(ass_path):
@@ -305,44 +328,56 @@ async def _final_encode(
     )
     video_fc = "[0:v]" + ",".join(video_filters) + "[vout]"
 
-    cmd = ["-threads", "2", "-i", base]  # input 0 = 720p video + narration/bed audio
-    filter_parts = [video_fc]
+    await ffmpeg([
+        "-threads", "1",
+        "-i", base,
+        "-filter_complex", video_fc,
+        "-map", "[vout]",
+        "-map", "0:a",  # narration/bed audio passes through untouched, no filter
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-x264-params", "pools=1",
+        "-c:a", "copy",  # no audio re-encode here — cheap
+        "-max_muxing_queue_size", "1024",
+        video_only_captioned,
+    ])
 
+    # ===== PASS B: music mix only (video passthrough) =====
     if music_path:
         fade_out_start = max(0.0, total - 3.0)
-        cmd.extend([
+        audio_fc = (
+            f"[1:a]volume={music_volume},afade=t=in:d=2,"
+            f"afade=t=out:st={fade_out_start:.2f}:d=3[music];"
+            "[music][0:a]sidechaincompress=threshold=0.03:ratio=6:attack=10:release=400[mducked];"
+            "[0:a][mducked]amix=inputs=2:duration=first:normalize=0[aout]"
+        )
+        await ffmpeg([
+            "-threads", "1",
+            "-i", video_only_captioned,
             "-thread_queue_size", "512",
             "-stream_loop", "-1",
             "-i", music_path,
+            "-filter_complex", audio_fc,
+            "-map", "0:v",
+            "-map", "[aout]",
+            "-t", f"{total:.3f}",
+            "-shortest",
+            "-c:v", "copy",  # video already correct from Pass A, no re-encode
+            "-c:a", "aac", "-b:a", "128k",
+            "-max_muxing_queue_size", "1024",
+            "-movflags", "+faststart",
+            dest,
         ])
-        filter_parts.append(
-            f"[1:a]volume={music_volume},afade=t=in:d=2,"
-            f"afade=t=out:st={fade_out_start:.2f}:d=3[music]"
-        )
-        filter_parts.append(
-            "[music][0:a]sidechaincompress=threshold=0.03:ratio=6:attack=10:release=400[mducked]"
-        )
-        filter_parts.append(
-            "[0:a][mducked]amix=inputs=2:duration=first:normalize=0[aout]"
-        )
-        audio_map = "[aout]"
     else:
-        audio_map = "0:a"
+        # No music: Pass A's output IS the final file — just needs faststart.
+        await ffmpeg([
+            "-i", video_only_captioned,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            dest,
+        ])
 
-    cmd.extend([
-        "-filter_complex", ";".join(filter_parts),
-        "-map", "[vout]",
-        "-map", audio_map,
-        "-t", f"{total:.3f}",
-        "-shortest",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-        "-x264-params", "pools=1",
-        "-c:a", "aac", "-b:a", "128k",
-        "-max_muxing_queue_size", "1024",
-        "-movflags", "+faststart",
-        dest,
-    ])
-    await ffmpeg(cmd)
+    if os.path.exists(video_only_captioned):
+        os.remove(video_only_captioned)
 
 # async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
 #     payload = ctx["payload"]
@@ -413,23 +448,80 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
             f.write(f"file '{p}'\n")
 
     base_video = os.path.join(scratch, "recap_concat.mp4")
-    # Re-encode (not -c copy) with genpts + cfr to rebuild ONE clean, continuous
-    # 24fps timeline. Segments have inconsistent timebases/PTS after trim/retime/
-    # freeze in reconciliation; stream-copy concat compounds those into a
-    # massively inflated duration (22+ hours). Re-encoding fixes it at the source.
+
+    # 2a) Video-only concat — unchanged approach (re-encode, not -c copy, with
+    # genpts + cfr to rebuild ONE clean, continuous 24fps timeline; segments
+    # have inconsistent timebases/PTS after trim/retime/freeze in
+    # reconciliation, and stream-copy concat compounds those into a massively
+    # inflated duration). Audio is dropped here — it's rebuilt separately in
+    # 2b so adjacent segments' narration can be crossfaded instead of hard-cut.
+    video_only = os.path.join(scratch, "recap_video_only.mp4")
     await ffmpeg([
         "-f", "concat", "-safe", "0", "-fflags", "+genpts", "-i", concat_list,
         "-vf", "scale=1280:720,format=yuv420p",
+        "-an",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
         "-r", "24", "-fps_mode", "cfr",
-        "-af", "aresample=async=1:min_hard_comp=0.100000:first_pts=0",
-        "-c:a", "aac", "-ar", "44100", "-ac", "2",
         "-threads", "2",
+        video_only,
+    ])
+
+    # 2b) Crossfade-join the same segments' audio with a short overlap at
+    # each splice, instead of hard-cutting. acrossfade only takes a pair at a
+    # time, so N segments chain through N-1 filter stages.
+    crossfade_audio = os.path.join(scratch, "recap_audio_crossfade.mp3")
+    if len(muxed) == 1:
+        await ffmpeg([
+            "-i", muxed[0],
+            "-vn",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2",
+            crossfade_audio,
+        ])
+    else:
+        inputs = []
+        for p in muxed:
+            inputs.extend(["-i", p])
+
+        filter_chain_parts = []
+        prev_label = "0:a"
+        for i in range(1, len(muxed)):
+            out_label = f"a{i}" if i < len(muxed) - 1 else "aout"
+            filter_chain_parts.append(
+                f"[{prev_label}][{i}:a]acrossfade=d={CROSSFADE_SEC:.3f}:c1=tri:c2=tri[{out_label}]"
+            )
+            prev_label = out_label
+
+        await ffmpeg(inputs + [
+            "-filter_complex", ";".join(filter_chain_parts),
+            "-map", "[aout]",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2",
+            "-threads", "1",
+            crossfade_audio,
+        ])
+
+    # 2c) Mux the crossfaded audio onto the video-only concat.
+    await ffmpeg([
+        "-i", video_only,
+        "-i", crossfade_audio,
+        "-map", "0:v",
+        "-map", "1:a",
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-shortest",
         base_video,
     ])
+
+    for p in (video_only, crossfade_audio):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
     concat_dur = await media_duration(base_video) or 0.0
     logger.info("[%s] base video created: %s (%.1fs)", project_id, base_video, concat_dur)
     # Guard: if concat is still absurd, fail now (seconds) not after the encode.
+    # The crossfades trim roughly (N-1)*CROSSFADE_SEC off the total — negligible
+    # (~2s for 84 segments) against this guard's margin.
     expected_max = sum(float(s.get("tts_duration_sec", 0) or 0) for s in ctx["segments"]) + 120.0
     if concat_dur > max(expected_max, 1800.0):
         raise RuntimeError(
