@@ -469,7 +469,7 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # 2b) Crossfade-join the same segments' audio with a short overlap at
     # each splice, instead of hard-cutting. acrossfade only takes a pair at a
     # time, so N segments chain through N-1 filter stages.
-    crossfade_audio = os.path.join(scratch, "recap_audio_crossfade.mp3")
+    crossfade_audio = os.path.join(scratch, "recap_audio_crossfade.m4a")
     if len(muxed) == 1:
         await ffmpeg([
             "-i", muxed[0],
