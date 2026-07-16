@@ -305,7 +305,12 @@ async def _final_encode(
     )
     video_fc = "[0:v]" + ",".join(video_filters) + "[vout]"
 
-    cmd = ["-threads", "2", "-i", base]  # input 0 = 720p video + narration/bed audio
+    # Music path uses a heavier filter graph (looped input + sidechaincompress +
+    # amix) which pushed threads=2 into OOM on longer (80+ segment) renders.
+    # threads=1 is proven stable there; no-music path keeps threads=2 (faster,
+    # confirmed stable on multiple renders).
+    encode_threads = "1" if music_path else "2"
+    cmd = ["-threads", encode_threads, "-i", base]  # input 0 = 720p video + narration/bed audio
     filter_parts = [video_fc]
 
     if music_path:
