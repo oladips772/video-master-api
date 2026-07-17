@@ -71,10 +71,12 @@ def _watermark_filter() -> str:
 NARRATION_GAIN = 1.9
 ORIGINAL_VOLUME_CAP = 0.15
 
-# Short crossfade at every segment-audio splice point in the concat step —
-# short enough to be inaudible as a "fade", long enough to smooth over any
-# hard-cut edge left by trim/reconcile rounding. Video concat is untouched;
-# this only changes how the audio tracks are joined.
+# Short edge fade-in/fade-out applied to each segment's audio before a
+# zero-overlap concat — short enough to be inaudible as a "fade", long enough
+# to smooth over any hard-cut click/pop left by trim/reconcile rounding.
+# Deliberately NOT an acrossfade: overlapping crossfades shrink total audio
+# duration by (N-1)*CROSSFADE_SEC, which drifted audio out of sync with video
+# over long renders. Video concat is untouched either way.
 CROSSFADE_SEC = 0.025
 
 
@@ -471,9 +473,14 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
         video_only,
     ])
 
-    # 2b) Crossfade-join the same segments' audio with a short overlap at
-    # each splice, instead of hard-cutting. acrossfade only takes a pair at a
-    # time, so N segments chain through N-1 filter stages.
+    # 2b) Fade each segment's audio at its edges (smooths splice clicks/pops)
+    # then concat with NO overlap. acrossfade's pairwise overlap consumed
+    # ~CROSSFADE_SEC of shared time at every splice, shrinking total audio
+    # duration by (N-1)*CROSSFADE_SEC (~2s over 82 segments) relative to
+    # video (built via plain concat, no overlap) — audio started in sync but
+    # drifted progressively earlier across the runtime. Fade-then-concat
+    # keeps total audio duration exactly equal to the sum of segment
+    # durations, matching video's boundaries.
     crossfade_audio = os.path.join(scratch, "recap_audio_crossfade.m4a")
     if len(muxed) == 1:
         await ffmpeg([
@@ -483,26 +490,46 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
             crossfade_audio,
         ])
     else:
-        inputs = []
-        for p in muxed:
-            inputs.extend(["-i", p])
+        faded_paths: List[str] = []
+        for i, p in enumerate(muxed):
+            seg_dur = await media_duration(p) or 0.0
+            fade_out_start = max(0.0, seg_dur - CROSSFADE_SEC)
+            faded_path = os.path.join(scratch, f"audio_faded_{i:03d}.m4a")
+            await ffmpeg([
+                "-i", p,
+                "-vn",
+                "-af",
+                f"afade=t=in:d={CROSSFADE_SEC:.3f},"
+                f"afade=t=out:st={fade_out_start:.3f}:d={CROSSFADE_SEC:.3f}",
+                "-c:a", "aac", "-ar", "44100", "-ac", "2",
+                faded_path,
+            ])
+            faded_paths.append(faded_path)
 
-        filter_chain_parts = []
-        prev_label = "0:a"
-        for i in range(1, len(muxed)):
-            out_label = f"a{i}" if i < len(muxed) - 1 else "aout"
-            filter_chain_parts.append(
-                f"[{prev_label}][{i}:a]acrossfade=d={CROSSFADE_SEC:.3f}:c1=tri:c2=tri[{out_label}]"
-            )
-            prev_label = out_label
+        audio_concat_list = os.path.join(scratch, "audio_concat.txt")
+        with open(audio_concat_list, "w") as f:
+            for p in faded_paths:
+                f.write(f"file '{p}'\n")
 
-        await ffmpeg(inputs + [
-            "-filter_complex", ";".join(filter_chain_parts),
-            "-map", "[aout]",
-            "-c:a", "aac", "-ar", "44100", "-ac", "2",
-            "-threads", "1",
+        # Every faded_path was just encoded with identical aac/44100/stereo
+        # params, so a stream-copy concat is safe here (no PTS-corruption
+        # risk like the raw-movie-cut case that forced a re-encode elsewhere).
+        await ffmpeg([
+            "-f", "concat", "-safe", "0",
+            "-i", audio_concat_list,
+            "-c", "copy",
             crossfade_audio,
         ])
+
+        for p in faded_paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        try:
+            os.remove(audio_concat_list)
+        except OSError:
+            pass
 
     # 2c) Mux the crossfaded audio onto the video-only concat.
     await ffmpeg([
@@ -525,8 +552,6 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
     concat_dur = await media_duration(base_video) or 0.0
     logger.info("[%s] base video created: %s (%.1fs)", project_id, base_video, concat_dur)
     # Guard: if concat is still absurd, fail now (seconds) not after the encode.
-    # The crossfades trim roughly (N-1)*CROSSFADE_SEC off the total — negligible
-    # (~2s for 84 segments) against this guard's margin.
     expected_max = sum(float(s.get("tts_duration_sec", 0) or 0) for s in ctx["segments"]) + 120.0
     if concat_dur > max(expected_max, 1800.0):
         raise RuntimeError(
