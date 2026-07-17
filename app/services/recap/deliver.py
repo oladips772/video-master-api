@@ -9,6 +9,7 @@ ctx in:  {payload, final_path, segments, seo}
 """
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -116,12 +117,13 @@ async def upload_and_callback(ctx: Dict[str, Any]) -> Dict[str, Any]:
         success = True
         return {"project_id": project_id, "final_video_url": url, "s3_key": s3_key}
     finally:
-        if success:
+        if success and os.environ.get("RECAP_DIAG") != "1":
             cleanup_scratch(project_id)
         else:
             logger.warning(
-                "[%s] delivery failed — preserving scratch dir for diagnosis",
+                "[%s] %s — preserving scratch dir for diagnosis",
                 project_id,
+                "RECAP_DIAG=1" if success else "delivery failed",
             )
 
 

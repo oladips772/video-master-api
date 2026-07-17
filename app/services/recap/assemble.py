@@ -34,6 +34,7 @@ from app.services.recap.utils import (
     ffmpeg,
     has_audio_stream,
     media_duration,
+    run_cmd,
     save_ctx,
     scratch_dir,
 )
@@ -164,6 +165,46 @@ async def _build_captions(ctx: Dict[str, Any]) -> Optional[str]:
     )
     logger.info("captions: %d words -> %s (style=%s)", len(word_timestamps), ass_path, style)
     return ass_path
+
+
+async def _diag_scan_frame_gaps(project_id: str, video_path: str) -> None:
+    """Opt-in (RECAP_DIAG=1) diagnostic: scan a video's frame PTS timeline for
+    gaps > 0.2s. Never raises, never affects the render — this is purely
+    investigative logging for the narration/scene drift investigation.
+    """
+    try:
+        probe = await run_cmd([
+            "ffprobe", "-v", "error", "-select_streams", "v",
+            "-show_entries", "frame=pkt_pts_time",
+            "-of", "csv=p=0", video_path,
+        ])
+    except RuntimeError:
+        logger.warning("[%s] DIAG: ffprobe frame scan failed for %s", project_id, video_path)
+        return
+
+    prev = None
+    gaps = []
+    frame_count = 0
+    for line in probe.strip().splitlines():
+        try:
+            t = float(line)
+        except ValueError:
+            continue
+        frame_count += 1
+        if prev is not None and (t - prev) > 0.2:
+            gaps.append((prev, t, t - prev))
+        prev = t
+
+    if gaps:
+        logger.warning(
+            "[%s] DIAG: %d frame gaps >0.2s in %s (frames=%d): %s",
+            project_id, len(gaps), video_path, frame_count, gaps[:10],
+        )
+    else:
+        logger.info(
+            "[%s] DIAG: %s frame timeline is continuous, no gaps found (frames=%d)",
+            project_id, video_path, frame_count,
+        )
 
 
 async def _fetch_music(ctx: Dict[str, Any]) -> Optional[str]:
@@ -451,6 +492,14 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
         for p in muxed:
             f.write(f"file '{p}'\n")
 
+    if os.environ.get("RECAP_DIAG") == "1":
+        with open(concat_list) as f:
+            written_lines = sum(1 for line in f if line.strip())
+        logger.info(
+            "[%s] DIAG: len(muxed)=%d, concat.txt lines=%d, match=%s",
+            project_id, len(muxed), written_lines, len(muxed) == written_lines,
+        )
+
     base_video = os.path.join(scratch, "recap_concat.mp4")
 
     # 2a) Video-only concat — unchanged approach (re-encode, not -c copy, with
@@ -474,6 +523,10 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "-threads", "2",
         video_only,
     ])
+    logger.info("[%s] recap_video_only.mp4 built at: %s", project_id, video_only)
+
+    if os.environ.get("RECAP_DIAG") == "1":
+        await _diag_scan_frame_gaps(project_id, video_only)
 
     # 2b) Fade each segment's audio at its edges (smooths splice clicks/pops)
     # then concat with NO overlap. acrossfade's pairwise overlap consumed
@@ -545,11 +598,17 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
         base_video,
     ])
 
-    for p in (video_only, crossfade_audio):
-        try:
-            os.remove(p)
-        except OSError:
-            pass
+    if os.environ.get("RECAP_DIAG") == "1":
+        logger.info(
+            "[%s] DIAG: preserving intermediates for inspection: %s, %s",
+            project_id, video_only, crossfade_audio,
+        )
+    else:
+        for p in (video_only, crossfade_audio):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
 
     concat_dur = await media_duration(base_video) or 0.0
     logger.info("[%s] base video created: %s (%.1fs)", project_id, base_video, concat_dur)
