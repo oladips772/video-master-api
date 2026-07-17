@@ -145,7 +145,10 @@ async def process_recap_job(job_id: str, payload: Dict[str, Any]) -> Dict[str, A
     ).get("movie_url"):
         raise ValueError("payload.source needs movie_s3_key or movie_url")
 
-    ctx: Dict[str, Any] = {"payload": payload}
+    # Stashed so downstream steps (clips.py/tts.py/assemble.py) can check
+    # cancellation at finer-than-per-step granularity without changing their
+    # uniform step(ctx) signature.
+    ctx: Dict[str, Any] = {"payload": payload, "job_id": job_id}
     save_ctx(ctx)
 
     steps = MANUAL_STEPS if _is_manual_mode(payload) else STEPS

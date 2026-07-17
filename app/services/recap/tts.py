@@ -16,12 +16,14 @@ narration:
 ctx in:  {payload, movie_path, movie_duration_sec, segments (clip_path)}
 ctx out: + {segments[*].{tts_path, tts_duration_sec}}, clips re-timed in place
 """
+import asyncio
 import logging
 import os
 import re
 from typing import Any, Dict, Optional
 
 from app.services.audio.text_to_speech import generate_speech_chunked
+from app.services.job_queue import job_queue
 from app.services.recap.deliver import report_progress
 from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
 
@@ -156,6 +158,12 @@ async def generate_tts(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     total_segments = len(ctx["segments"])
     for idx, seg in enumerate(ctx["segments"]):
+        if job_queue.is_cancelled(ctx.get("job_id")):
+            logger.info(
+                "[%s] generate_tts: cancelled before seg %03d", payload["project_id"], seg["id"]
+            )
+            raise asyncio.CancelledError(f"cancelled before generate_tts seg {seg['id']}")
+
         # Trailing full-stops make Kokoro/XTTS tack on a small end-of-utterance
         # pause; strip them so the next segment starts cleanly. rstrip("." )
         # removes both a trailing period and any trailing whitespace it leaves.

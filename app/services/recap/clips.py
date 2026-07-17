@@ -27,6 +27,7 @@ from app.services.recap.config import (
     RECAP_SCENE_SNAP,
     frame_size,
 )
+from app.services.job_queue import job_queue
 from app.services.recap.deliver import report_progress
 from app.services.recap.utils import ffmpeg, media_duration, save_ctx, scratch_dir
 
@@ -484,6 +485,12 @@ async def extract_clips(ctx: Dict[str, Any]) -> Dict[str, Any]:
     vf = mezzanine_vf(settings)
     total_segments = len(ctx["segments"])
     for idx, seg in enumerate(ctx["segments"]):
+        if job_queue.is_cancelled(ctx.get("job_id")):
+            logger.info(
+                "[%s] extract_clips: cancelled before seg %03d", project_id, seg["id"]
+            )
+            raise asyncio.CancelledError(f"cancelled before extract_clips seg {seg['id']}")
+
         clip = os.path.join(scratch, f"seg_{seg['id']:03d}.mp4")
         seg["clip_path"] = clip
         if not (os.path.exists(clip) and os.path.getsize(clip) > 0):

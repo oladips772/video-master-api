@@ -190,6 +190,15 @@ class JobQueue:
             logger.warning(f"Job {job_id} not found")
         return job
 
+    def is_cancelled(self, job_id: Optional[str]) -> bool:
+        """Fine-grained cancellation check for callers that don't want to
+        pull the whole Job object (e.g. a per-segment loop in clips.py/
+        tts.py, or a pre-final_encode check inside assemble())."""
+        if not job_id:
+            return False
+        job = self.jobs.get(job_id)
+        return bool(job and job.status == JobStatus.CANCELLED)
+
     async def cancel_job(self, job_id: str) -> bool:
         """Cancel an in-progress job.
 
@@ -213,11 +222,14 @@ class JobQueue:
         job.error = "Cancelled by user"
         job.updated_at = datetime.utcnow().isoformat()
 
-        # Best-effort external notification, reusing the "failed" shape so
-        # existing consumers (Recap Studio) don't need to handle a new status.
+        # Best-effort external notification. Recap Studio's callback contract
+        # uses status:"error" (see deliver.py's report_error); other job_queue
+        # consumers that happen to carry a callback_url follow the more
+        # generic status:"failed" convention.
         notify_url = job.params.get("callback_url")
+        notify_status = "error" if job.operation == JobType.RECAP.value else "failed"
         await job_markers.notify_terminal(
-            notify_url, job_id, job.params.get("project_id"), "failed", "Cancelled by user"
+            notify_url, job_id, job.params.get("project_id"), notify_status, "Cancelled by user"
         )
 
         task = self.processing_tasks.get(job_id)

@@ -136,13 +136,18 @@ async def reconcile_orphaned_jobs() -> int:
     markers = list_markers()
     for marker in markers:
         job_id = marker.get("job_id", "?")
+        job_type = marker.get("job_type")
         logger.warning(
             "reconciling orphaned job %s (job_type=%s) — notifying %s",
-            job_id, marker.get("job_type"), marker.get("notify_url") or "(no notify_url)",
+            job_id, job_type, marker.get("notify_url") or "(no notify_url)",
         )
+        # Recap Studio's callback contract uses status:"error" (see
+        # deliver.py's report_error); other consumers (e.g. kenburns'
+        # webhook_url) use the more generic status:"failed".
+        notify_status = "error" if job_type == "recap" else "failed"
         await notify_terminal(
             marker.get("notify_url"), job_id, marker.get("project_id"),
-            "failed", INTERRUPTED_ERROR,
+            notify_status, INTERRUPTED_ERROR,
         )
         remove_marker(job_id)
     if markers:

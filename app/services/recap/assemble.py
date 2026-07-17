@@ -16,11 +16,13 @@ bold, position) are exactly what prepare_subtitle_styling expects.
 ctx in:  {payload, segments (clip_path + tts_path), seo}
 ctx out: + {final_path}
 """
+import asyncio
 import logging
 import os
 from typing import Any, Dict, List, Optional
 
 from app.utils.captions import create_srt_from_word_timestamps
+from app.services.job_queue import job_queue
 from app.services.recap.config import (
     RECAP_WATERMARK_OPACITY,
     RECAP_WATERMARK_SIZE,
@@ -563,6 +565,10 @@ async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
     ass_path = None
     if settings.get("captions_enabled"):
         ass_path = await _build_captions(ctx)
+
+    if job_queue.is_cancelled(ctx.get("job_id")):
+        logger.info("[%s] cancelled before final_encode", project_id)
+        raise asyncio.CancelledError("cancelled before final_encode")
 
     # 4) Music + captions + final encode. FIXED: pass base_video
     final = os.path.join(scratch, "recap_final.mp4")
