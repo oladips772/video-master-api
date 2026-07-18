@@ -421,8 +421,8 @@ async def _final_encode(
             dest,
         ])
 
-    if os.path.exists(video_only_captioned):
-        os.remove(video_only_captioned)
+    # TEMP DEBUG:     if os.path.exists(video_only_captioned):
+    # TEMP DEBUG:         os.remove(video_only_captioned)
 
 # async def assemble(ctx: Dict[str, Any]) -> Dict[str, Any]:
 #     payload = ctx["payload"]
